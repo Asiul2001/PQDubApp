@@ -73,3 +73,28 @@ Build a reusable pub quiz system with:
 - optional ranking
 - fair scoring
 - manager control
+
+
+firebase:
+
+// Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+import { getAnalytics } from "firebase/analytics";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyBypsKwl5VXtswcylgvA6i5RhkOqxnk4Ks",
+  authDomain: "dubpqapp.firebaseapp.com",
+  projectId: "dubpqapp",
+  storageBucket: "dubpqapp.firebasestorage.app",
+  messagingSenderId: "874435675782",
+  appId: "1:874435675782:web:c8e525c9688c2a0e19f307",
+  measurementId: "G-56WVPWMCQV"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const analytics = getAnalytics(app);
