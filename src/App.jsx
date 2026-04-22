@@ -3,9 +3,11 @@ import { db } from "./firebase";
 import {
   arrayUnion,
   collection,
+  collectionGroup,
   doc,
   getDoc,
   getDocs,
+  increment,
   onSnapshot,
   query,
   runTransaction,
@@ -128,6 +130,34 @@ function getLobbyId(code) {
   return `${latestQuizId}__${code}`;
 }
 
+function getEventId(code) {
+  return `${latestQuizId}__${normalizeQuizCode(code)}`;
+}
+
+function getTeamId(name) {
+  return normalizeTeamName(name);
+}
+
+function getTeammateId(name) {
+  return normalizePersonName(name);
+}
+
+function getEventRef(code) {
+  return doc(db, "quizEvents", getEventId(code));
+}
+
+function getTeamRef(teamId) {
+  return doc(db, "teams", teamId);
+}
+
+function getTeamSessionRef(code, teamId) {
+  return doc(db, "quizEvents", getEventId(code), "teamSessions", teamId);
+}
+
+function getTeammateRef(teamId, teammateId) {
+  return doc(db, "teams", teamId, "teammates", teammateId);
+}
+
 function getRoundStartMs(lobbyData, roundId) {
   const startedAt = lobbyData?.roundStarts?.[roundId];
 
@@ -182,6 +212,55 @@ function getCompletionValue(session) {
     session?.lastSeenAt ||
     session?.createdAt
   );
+}
+
+function createSessionRecord({
+  cleanedCode,
+  cleanedName,
+  displayName,
+  normalized,
+  rankingOptIn,
+}) {
+  return {
+    id: normalized,
+    eventId: getEventId(cleanedCode),
+    quizId: latestQuizId,
+    lobbyCode: cleanedCode,
+    quizCode: cleanedCode,
+    quizVersion: 1,
+    teamId: normalized,
+    teamName: cleanedName,
+    teamNameNormalized: normalized,
+    playerName: displayName,
+    playerNames: displayName === "Anonym" ? [] : [displayName],
+    normalizedPlayerNames:
+      displayName === "Anonym" ? [] : [normalizePersonName(displayName)],
+    rankingOptIn,
+    yearlyRankingOptInAtTime: rankingOptIn,
+    totalPoints: 0,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    lastSeenAt: serverTimestamp(),
+  };
+}
+
+function createTeamRecord({ cleanedName, normalized, rankingOptIn }) {
+  return {
+    id: normalized,
+    name: cleanedName,
+    normalizedName: normalized,
+    currentDisplayName: cleanedName,
+    teamName: cleanedName,
+    teamNameNormalized: normalized,
+    yearlyRankingOptIn: rankingOptIn,
+    rankingOptIn,
+    gamesPlayed: 0,
+    totalDailyPoints: 0,
+    totalGlobalPoints: 0,
+    totalPodiumBonusPoints: 0,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
 }
 
 function isAnswerWindowClosed(lobbyData, now) {
@@ -1125,9 +1204,9 @@ function App() {
   }, [activeRoundId, quizRounds]);
 
   useEffect(() => {
-    if (!sessionId) return undefined;
+    if (!sessionId || !sessionData?.lobbyCode) return undefined;
 
-    const sessionRef = doc(db, "quizSessions", sessionId);
+    const sessionRef = getTeamSessionRef(sessionData.lobbyCode, sessionId);
 
     return onSnapshot(sessionRef, (snapshot) => {
       if (!snapshot.exists()) return;
@@ -1144,7 +1223,7 @@ function App() {
         return nextDrafts;
       });
     });
-  }, [sessionId]);
+  }, [sessionData?.lobbyCode, sessionId]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => setNow(Date.now()), 80);
@@ -1163,7 +1242,7 @@ function App() {
   useEffect(() => {
     if (!sessionData?.lobbyCode) return undefined;
 
-    const lobbyRef = doc(db, "quizLobbies", getLobbyId(sessionData.lobbyCode));
+    const lobbyRef = getEventRef(sessionData.lobbyCode);
 
     return onSnapshot(lobbyRef, (snapshot) => {
       setLobbyData(snapshot.exists() ? snapshot.data() : null);
@@ -1241,7 +1320,7 @@ function App() {
   useEffect(() => {
     if (!activeManager && !sessionData) return undefined;
 
-    const sessionsRef = collection(db, "quizSessions");
+    const sessionsRef = collectionGroup(db, "teamSessions");
 
     return onSnapshot(sessionsRef, (snapshot) => {
       const teams = snapshot.docs
@@ -1259,11 +1338,13 @@ function App() {
   useEffect(() => {
     if (!sessionData?.lobbyCode) return undefined;
 
-    const sessionsRef = collection(db, "quizSessions");
-    const teamsQuery = query(
-      sessionsRef,
-      where("lobbyCode", "==", sessionData.lobbyCode),
+    const sessionsRef = collection(
+      db,
+      "quizEvents",
+      getEventId(sessionData.lobbyCode),
+      "teamSessions",
     );
+    const teamsQuery = query(sessionsRef);
 
     return onSnapshot(teamsQuery, (snapshot) => {
       const teams = snapshot.docs
@@ -1275,6 +1356,52 @@ function App() {
     });
   }, [sessionData?.lobbyCode]);
 
+  useEffect(() => {
+    if (!activeManager || !sessionData?.lobbyCode) return;
+
+    const dailyRows = getDailyRankingWithTiebreakers(registeredTeams, lobbyData)
+      .ranking.map((team, index) => ({
+        rank: index + 1,
+        teamId: team.teamId || team.teamNameNormalized || team.id,
+        teamName: team.teamName,
+        totalPoints: team.totalPoints || 0,
+        tiebreakerEstimate: getEstimateValue(lobbyData, team.id),
+        tiebreakerDistance: getTiebreakerDistance(lobbyData, team.id),
+        podiumBonusPoints: index === 0 ? 1.5 : index === 1 ? 1 : index === 2 ? 0.5 : 0,
+      }));
+    const globalRows = aggregateYearlyRanking(allTeams).map((team, index) => ({
+      rank: index + 1,
+      teamId: team.teamNameNormalized || team.id,
+      teamName: team.teamName,
+      totalGlobalPoints: team.totalPoints || 0,
+      totalDailyPoints: team.totalQuizPoints || 0,
+      totalPodiumBonusPoints:
+        (team.totalPoints || 0) - (team.totalQuizPoints || 0),
+      gamesPlayed: team.sessions || 0,
+    }));
+
+    setDoc(
+      doc(db, "quizEvents", getEventId(sessionData.lobbyCode), "rankings", "daily"),
+      {
+        eventId: getEventId(sessionData.lobbyCode),
+        quizCode: sessionData.lobbyCode,
+        rows: dailyRows,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    ).catch((error) => console.error("DAILY RANKING SNAPSHOT ERROR:", error));
+
+    setDoc(
+      doc(db, "rankings", "globalCurrent"),
+      {
+        rows: globalRows,
+        seasonId: "2026",
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    ).catch((error) => console.error("GLOBAL RANKING SNAPSHOT ERROR:", error));
+  }, [activeManager, allTeams, lobbyData, registeredTeams, sessionData?.lobbyCode]);
+
   function updateAnswerDraft(questionId, value) {
     setAnswerDrafts((currentDrafts) => ({
       ...currentDrafts,
@@ -1283,52 +1410,112 @@ function App() {
   }
 
   async function ensureLobby(cleanedCode, { deployForToday = false } = {}) {
-    const lobbyRef = doc(db, "quizLobbies", getLobbyId(cleanedCode));
+    const lobbyRef = getEventRef(cleanedCode);
     const deployedAt = new Date();
     const answerWindowEndsAt = new Date(deployedAt.getTime() + ANSWER_WINDOW_MS);
 
     await setDoc(
       lobbyRef,
       {
+        id: getEventId(cleanedCode),
         quizId: latestQuizId,
         lobbyCode: cleanedCode,
+        quizCode: cleanedCode,
+        seasonId: "2026",
+        status: deployForToday ? "active" : "planned",
         ...(deployForToday
           ? {
               answerWindowEndsAt,
               answerWindowStartedAt: deployedAt,
+              startedAt: deployedAt,
             }
           : {}),
         updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp(),
       },
       { merge: true },
     );
+
+    if (deployForToday) {
+      await setDoc(
+        doc(db, "settings", "app"),
+        {
+          activeEventId: getEventId(cleanedCode),
+          activeQuizCode: cleanedCode,
+          activeSeasonId: "2026",
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+    }
   }
 
   async function saveTeamSession({
     cleanedCode,
     cleanedName,
     displayName,
-    newSessionId,
     normalized,
     rankingOptIn,
   }) {
-    const sessionRef = doc(db, "quizSessions", newSessionId);
+    const teamRef = getTeamRef(normalized);
+    const sessionRef = getTeamSessionRef(cleanedCode, normalized);
+    const teammateId = getTeammateId(displayName);
+    const teamSnapshot = await getDoc(teamRef);
 
-    await setDoc(sessionRef, {
-      quizId: latestQuizId,
-      lobbyCode: cleanedCode,
-      quizVersion: 1,
-      teamName: cleanedName,
-      teamNameNormalized: normalized,
-      playerName: displayName,
-      playerNames: [displayName],
-      normalizedPlayerNames: [normalizePersonName(displayName)],
-      rankingOptIn,
-      totalPoints: 0,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-      lastSeenAt: serverTimestamp(),
-    });
+    if (teamSnapshot.exists()) {
+      await setDoc(
+        teamRef,
+        {
+          currentDisplayName: cleanedName,
+          teamName: cleanedName,
+          yearlyRankingOptIn: rankingOptIn,
+          rankingOptIn,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+    } else {
+      await setDoc(
+        teamRef,
+        createTeamRecord({ cleanedName, normalized, rankingOptIn }),
+        { merge: true },
+      );
+    }
+
+    if (displayName !== "Anonym" && teammateId) {
+      await setDoc(
+        getTeammateRef(normalized, teammateId),
+        {
+          id: teammateId,
+          name: displayName,
+          normalizedName: teammateId,
+          joinedEventIds: arrayUnion(getEventId(cleanedCode)),
+          firstSeenAt: serverTimestamp(),
+          lastSeenAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+    } else {
+      await setDoc(
+        teamRef,
+        {
+          anonymousJoinCount: increment(1),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+    }
+
+    await setDoc(
+      sessionRef,
+      createSessionRecord({
+        cleanedCode,
+        cleanedName,
+        displayName,
+        normalized,
+        rankingOptIn,
+      }),
+    );
   }
 
   async function handleManagerLogin() {
@@ -1431,8 +1618,8 @@ function App() {
     }
 
     const displayName = playerName.trim() || "Anonym";
-    const newSessionId = `${latestQuizId}__${cleanedCode}__${normalized}`;
-    const sessionRef = doc(db, "quizSessions", newSessionId);
+    const newSessionId = normalized;
+    const sessionRef = getTeamSessionRef(cleanedCode, normalized);
 
     try {
       const quizzesQuery = query(
@@ -1520,7 +1707,7 @@ function App() {
 
       await ensureLobby(cleanedCode);
 
-      const teamProfileRef = doc(db, "teamProfiles", normalized);
+      const teamProfileRef = getTeamRef(normalized);
       const teamProfileSnapshot = await getDoc(teamProfileRef);
       const teamProfile = teamProfileSnapshot.exists()
         ? teamProfileSnapshot.data()
@@ -1529,28 +1716,52 @@ function App() {
 
       if (existing.exists()) {
         const rankingOptIn =
-          teamProfile?.rankingOptIn ?? existing.data().rankingOptIn ?? false;
+          teamProfile?.yearlyRankingOptIn ??
+          teamProfile?.rankingOptIn ??
+          existing.data().rankingOptIn ??
+          false;
 
         if (!teamProfileSnapshot.exists()) {
           await setDoc(teamProfileRef, {
-            teamName: existing.data().teamName || cleanedName,
-            teamNameNormalized: normalized,
-            rankingOptIn,
-            playerNames: arrayUnion(displayName),
-            normalizedPlayerNames: arrayUnion(normalizePersonName(displayName)),
-            createdAt: serverTimestamp(),
+            ...createTeamRecord({
+              cleanedName: existing.data().teamName || cleanedName,
+              normalized,
+              rankingOptIn,
+            }),
             updatedAt: serverTimestamp(),
-          });
+          }, { merge: true });
         }
 
-        await updateDoc(sessionRef, {
+        await setDoc(sessionRef, {
           playerName: displayName,
-          playerNames: arrayUnion(displayName),
-          normalizedPlayerNames: arrayUnion(normalizePersonName(displayName)),
+          ...(displayName !== "Anonym"
+            ? {
+                playerNames: arrayUnion(displayName),
+                normalizedPlayerNames: arrayUnion(normalizePersonName(displayName)),
+              }
+            : {}),
           rankingOptIn,
+          yearlyRankingOptInAtTime: rankingOptIn,
           lastSeenAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-        });
+        }, { merge: true });
+        if (displayName !== "Anonym") {
+          const teammateId = getTeammateId(displayName);
+          if (teammateId) {
+            await setDoc(
+              getTeammateRef(normalized, teammateId),
+              {
+                id: teammateId,
+                name: displayName,
+                normalizedName: teammateId,
+                joinedEventIds: arrayUnion(getEventId(cleanedCode)),
+                lastSeenAt: serverTimestamp(),
+              },
+              { merge: true },
+            );
+          }
+        }
+        setSessionData({ id: newSessionId, ...existing.data(), lobbyCode: cleanedCode });
         setSessionId(newSessionId);
         setMessage(`Bestehende Session beigetreten: ${existing.data().teamName}`);
         return;
@@ -1560,19 +1771,51 @@ function App() {
         await setDoc(
           teamProfileRef,
           {
-            playerNames: arrayUnion(displayName),
-            normalizedPlayerNames: arrayUnion(normalizePersonName(displayName)),
+            ...(displayName !== "Anonym"
+              ? {
+                  playerNames: arrayUnion(displayName),
+                  normalizedPlayerNames: arrayUnion(normalizePersonName(displayName)),
+                }
+              : {
+                  anonymousJoinCount: increment(1),
+                }),
+            yearlyRankingOptIn: Boolean(teamProfile.yearlyRankingOptIn ?? teamProfile.rankingOptIn),
+            rankingOptIn: Boolean(teamProfile.yearlyRankingOptIn ?? teamProfile.rankingOptIn),
             updatedAt: serverTimestamp(),
           },
           { merge: true },
         );
+        if (displayName !== "Anonym") {
+          const teammateId = getTeammateId(displayName);
+          if (teammateId) {
+            await setDoc(
+              getTeammateRef(normalized, teammateId),
+              {
+                id: teammateId,
+                name: displayName,
+                normalizedName: teammateId,
+                joinedEventIds: arrayUnion(getEventId(cleanedCode)),
+                lastSeenAt: serverTimestamp(),
+              },
+              { merge: true },
+            );
+          }
+        }
         await saveTeamSession({
           cleanedCode,
           cleanedName,
           displayName,
-          newSessionId,
           normalized,
-          rankingOptIn: Boolean(teamProfile.rankingOptIn),
+          rankingOptIn: Boolean(teamProfile.yearlyRankingOptIn ?? teamProfile.rankingOptIn),
+        });
+        setSessionData({
+          ...createSessionRecord({
+            cleanedCode,
+            cleanedName,
+            displayName,
+            normalized,
+            rankingOptIn: Boolean(teamProfile.yearlyRankingOptIn ?? teamProfile.rankingOptIn),
+          }),
         });
         setSessionId(newSessionId);
         setMessage(`Team beigetreten: ${cleanedName}`);
@@ -1604,24 +1847,23 @@ function App() {
     } = pendingTeamCreate;
 
     try {
-      await setDoc(doc(db, "teamProfiles", normalized), {
-        teamName: cleanedName,
-        teamNameNormalized: normalized,
-        rankingOptIn,
-        playerNames: [displayName],
-        normalizedPlayerNames: [normalizePersonName(displayName)],
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
       await saveTeamSession({
         cleanedCode,
         cleanedName,
         displayName,
-        newSessionId,
         normalized,
         rankingOptIn,
       });
 
+      setSessionData({
+        ...createSessionRecord({
+          cleanedCode,
+          cleanedName,
+          displayName,
+          normalized,
+          rankingOptIn,
+        }),
+      });
       setSessionId(newSessionId);
       setMessage(`Neue Session erstellt für: ${cleanedName}`);
       setPendingTeamCreate(null);
@@ -1643,7 +1885,7 @@ function App() {
     const result = checkAnswer(answer, question.acceptedAnswers, question.points);
 
     try {
-      const sessionRef = doc(db, "quizSessions", sessionId);
+      const sessionRef = getTeamSessionRef(sessionData.lobbyCode, sessionId);
       const alreadyLocked = sessionData?.answers?.[question.id]?.locked;
       const alreadyAwarded =
         sessionData?.answers?.[question.id]?.pointsAwarded || 0;
@@ -1710,7 +1952,7 @@ function App() {
     if (!sessionId) return;
 
     try {
-      const sessionRef = doc(db, "quizSessions", sessionId);
+      const sessionRef = getTeamSessionRef(sessionData.lobbyCode, sessionId);
 
       await updateDoc(sessionRef, {
         [`hints.${roundId}.${questionId}`]: true,
@@ -1725,7 +1967,7 @@ function App() {
     if (!sessionData?.lobbyCode) return;
 
     try {
-      const lobbyRef = doc(db, "quizLobbies", getLobbyId(sessionData.lobbyCode));
+      const lobbyRef = getEventRef(sessionData.lobbyCode);
 
       await setDoc(
         lobbyRef,
@@ -1750,7 +1992,7 @@ function App() {
     if (!sessionId) return;
 
     try {
-      const sessionRef = doc(db, "quizSessions", sessionId);
+      const sessionRef = getTeamSessionRef(sessionData.lobbyCode, sessionId);
       const startedAt = new Date();
 
       setSessionData((currentSession) => ({
@@ -1778,7 +2020,7 @@ function App() {
     if (!isAdmin || !sessionData?.lobbyCode) return;
 
     try {
-      const lobbyRef = doc(db, "quizLobbies", getLobbyId(sessionData.lobbyCode));
+      const lobbyRef = getEventRef(sessionData.lobbyCode);
 
       await setDoc(
         lobbyRef,
@@ -1834,7 +2076,7 @@ function App() {
 
       if (sessionData?.lobbyCode) {
         await setDoc(
-          doc(db, "quizLobbies", getLobbyId(sessionData.lobbyCode)),
+          getEventRef(sessionData.lobbyCode),
           {
             quizId: latestQuizId,
             lobbyCode: sessionData.lobbyCode,
@@ -1963,7 +2205,7 @@ function App() {
   async function startTiebreaker() {
     if (!activeManager || !sessionData?.lobbyCode) return;
 
-    const lobbyRef = doc(db, "quizLobbies", getLobbyId(sessionData.lobbyCode));
+    const lobbyRef = getEventRef(sessionData.lobbyCode);
 
     try {
       await setDoc(
@@ -1987,7 +2229,7 @@ function App() {
   async function markTeamTiebreakerReady() {
     if (!sessionId || !sessionData?.lobbyCode) return;
 
-    const lobbyRef = doc(db, "quizLobbies", getLobbyId(sessionData.lobbyCode));
+    const lobbyRef = getEventRef(sessionData.lobbyCode);
     const dailyRanking = getDailyRankingWithTiebreakers(registeredTeams, lobbyData);
     const finalRound = quizRounds[quizRounds.length - 1];
     const eligibleIds = new Set(
@@ -2046,7 +2288,7 @@ function App() {
     const estimate = Number(estimateValue);
     if (!Number.isFinite(estimate)) return;
 
-    const lobbyRef = doc(db, "quizLobbies", getLobbyId(sessionData.lobbyCode));
+    const lobbyRef = getEventRef(sessionData.lobbyCode);
 
     try {
       await runTransaction(db, async (transaction) => {
@@ -2101,7 +2343,9 @@ function App() {
 
       await setDoc(feedbackRef, {
         quizId: latestQuizId,
+        eventId: getEventId(sessionData.lobbyCode),
         lobbyCode: sessionData.lobbyCode,
+        teamId: sessionData.teamId || sessionData.teamNameNormalized || "",
         teamName: sessionData.teamName || "",
         playerName: feedbackDraft.anonymous
           ? "Anonym"

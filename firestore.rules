@@ -2,65 +2,20 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isQuizSessionId(sessionId) {
-      return request.resource.data.quizId is string
-        && request.resource.data.lobbyCode is string
-        && request.resource.data.teamNameNormalized is string
-        && request.resource.data.quizId + "__" + request.resource.data.lobbyCode + "__" + request.resource.data.teamNameNormalized == sessionId;
-    }
-
-    function hasValidSessionShape() {
+    function hasValidEventShape() {
       return request.resource.data.keys().hasOnly([
+        "id",
         "quizId",
+        "pubQuizId",
         "lobbyCode",
-        "quizVersion",
-        "teamName",
-        "teamNameNormalized",
-        "playerName",
-        "playerNames",
-        "normalizedPlayerNames",
-        "rankingOptIn",
-        "totalPoints",
-        "createdAt",
-        "completedAt",
-        "updatedAt",
-        "lastSeenAt",
-        "answers",
-        "hints",
-        "roundStarts"
-      ])
-      && request.resource.data.quizId is string
-      && request.resource.data.lobbyCode is string
-      && request.resource.data.quizVersion is int
-      && request.resource.data.teamName is string
-      && request.resource.data.teamNameNormalized is string
-      && request.resource.data.playerName is string
-      && (!("playerNames" in request.resource.data) || request.resource.data.playerNames is list)
-      && (!("normalizedPlayerNames" in request.resource.data) || request.resource.data.normalizedPlayerNames is list)
-      && request.resource.data.rankingOptIn is bool
-      && request.resource.data.totalPoints is number;
-    }
-
-    match /quizSessions/{sessionId} {
-      allow read: if true;
-      allow create: if isQuizSessionId(sessionId) && hasValidSessionShape();
-      allow update: if hasValidSessionShape()
-        && request.resource.data.quizId == resource.data.quizId
-        && request.resource.data.lobbyCode == resource.data.lobbyCode
-        && request.resource.data.quizVersion == resource.data.quizVersion
-        && request.resource.data.teamNameNormalized == resource.data.teamNameNormalized
-        && request.resource.data.createdAt == resource.data.createdAt;
-      allow delete: if false;
-    }
-
-    match /quizLobbies/{lobbyId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.keys().hasOnly([
-        "quizId",
-        "lobbyCode",
+        "quizCode",
+        "seasonId",
+        "status",
         "activeRoundId",
         "answerWindowEndsAt",
         "answerWindowStartedAt",
+        "startedAt",
+        "closedAt",
         "revealedAnswers",
         "roundStarts",
         "tiebreakerAnswer",
@@ -72,12 +27,17 @@ service cloud.firestore {
         "tiebreakerStatus",
         "tiebreakerSubmissions",
         "unlockedRounds",
+        "createdAt",
         "updatedAt"
       ])
       && request.resource.data.quizId is string
       && request.resource.data.lobbyCode is string
+      && request.resource.data.quizCode is string
+      && (!("status" in request.resource.data) || request.resource.data.status is string)
       && (!("answerWindowEndsAt" in request.resource.data) || request.resource.data.answerWindowEndsAt is timestamp)
       && (!("answerWindowStartedAt" in request.resource.data) || request.resource.data.answerWindowStartedAt is timestamp)
+      && (!("startedAt" in request.resource.data) || request.resource.data.startedAt is timestamp)
+      && (!("closedAt" in request.resource.data) || request.resource.data.closedAt is timestamp)
       && (!("tiebreakerQuestion" in request.resource.data) || request.resource.data.tiebreakerQuestion is string)
       && (!("tiebreakerAnswer" in request.resource.data) || request.resource.data.tiebreakerAnswer is number || request.resource.data.tiebreakerAnswer == null)
       && (!("tiebreakerEstimates" in request.resource.data) || request.resource.data.tiebreakerEstimates is map)
@@ -85,6 +45,142 @@ service cloud.firestore {
       && (!("tiebreakerReady" in request.resource.data) || request.resource.data.tiebreakerReady is map)
       && (!("tiebreakerStatus" in request.resource.data) || request.resource.data.tiebreakerStatus is string)
       && (!("tiebreakerSubmissions" in request.resource.data) || request.resource.data.tiebreakerSubmissions is map);
+    }
+
+    function hasValidTeamSessionShape() {
+      return request.resource.data.keys().hasOnly([
+        "id",
+        "eventId",
+        "quizId",
+        "lobbyCode",
+        "quizCode",
+        "quizVersion",
+        "teamId",
+        "teamName",
+        "teamNameNormalized",
+        "playerName",
+        "playerNames",
+        "normalizedPlayerNames",
+        "rankingOptIn",
+        "yearlyRankingOptInAtTime",
+        "totalPoints",
+        "rankDaily",
+        "podiumBonusPoints",
+        "finalDailyPointsForGlobal",
+        "createdAt",
+        "completedAt",
+        "updatedAt",
+        "lastSeenAt",
+        "answers",
+        "hints",
+        "roundStarts",
+        "tiebreaker"
+      ])
+      && request.resource.data.quizId is string
+      && request.resource.data.lobbyCode is string
+      && request.resource.data.quizCode is string
+      && request.resource.data.quizVersion is int
+      && request.resource.data.teamId is string
+      && request.resource.data.teamName is string
+      && request.resource.data.teamNameNormalized is string
+      && request.resource.data.playerName is string
+      && (!("playerNames" in request.resource.data) || request.resource.data.playerNames is list)
+      && (!("normalizedPlayerNames" in request.resource.data) || request.resource.data.normalizedPlayerNames is list)
+      && request.resource.data.rankingOptIn is bool
+      && request.resource.data.totalPoints is number;
+    }
+
+    function hasValidTeamShape() {
+      return request.resource.data.keys().hasOnly([
+        "id",
+        "name",
+        "normalizedName",
+        "currentDisplayName",
+        "teamName",
+        "teamNameNormalized",
+        "yearlyRankingOptIn",
+        "rankingOptIn",
+        "playerNames",
+        "normalizedPlayerNames",
+        "anonymousJoinCount",
+        "gamesPlayed",
+        "totalDailyPoints",
+        "totalGlobalPoints",
+        "totalPodiumBonusPoints",
+        "lastPlayedAt",
+        "createdAt",
+        "updatedAt"
+      ])
+      && request.resource.data.id is string
+      && request.resource.data.name is string
+      && request.resource.data.normalizedName is string
+      && request.resource.data.yearlyRankingOptIn is bool
+      && request.resource.data.rankingOptIn is bool;
+    }
+
+    match /settings/{settingId} {
+      allow read: if true;
+      allow create, update: if request.resource.data.keys().hasOnly([
+        "activeEventId",
+        "activeQuizCode",
+        "activeSeasonId",
+        "answerWindowHours",
+        "allowNewTeams",
+        "updatedAt"
+      ]);
+      allow delete: if false;
+    }
+
+    match /seasons/{seasonId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if false;
+    }
+
+    match /quizEvents/{eventId} {
+      allow read: if true;
+      allow create, update: if hasValidEventShape();
+      allow delete: if false;
+
+      match /teamSessions/{teamId} {
+        allow read: if true;
+        allow create, update: if hasValidTeamSessionShape();
+        allow delete: if false;
+      }
+
+      match /rankings/{rankingId} {
+        allow read: if true;
+        allow create, update: if true;
+        allow delete: if false;
+      }
+    }
+
+    match /teams/{teamId} {
+      allow read: if true;
+      allow create, update: if hasValidTeamShape();
+      allow delete: if false;
+
+      match /teammates/{teammateId} {
+        allow read: if true;
+        allow create, update: if request.resource.data.keys().hasOnly([
+          "id",
+          "name",
+          "normalizedName",
+          "joinedEventIds",
+          "firstSeenAt",
+          "lastSeenAt"
+        ])
+        && request.resource.data.id is string
+        && request.resource.data.name is string
+        && request.resource.data.normalizedName is string
+        && (!("joinedEventIds" in request.resource.data) || request.resource.data.joinedEventIds is list);
+        allow delete: if false;
+      }
+    }
+
+    match /rankings/{rankingId} {
+      allow read: if true;
+      allow create, update: if true;
       allow delete: if false;
     }
 
@@ -108,26 +204,6 @@ service cloud.firestore {
       && request.resource.data.tiebreakerQuestion is string
       && (!("tiebreakerAnswer" in request.resource.data) || request.resource.data.tiebreakerAnswer is number || request.resource.data.tiebreakerAnswer == null)
       && request.resource.data.rounds is list;
-      allow delete: if false;
-    }
-
-    match /teamProfiles/{teamId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.keys().hasOnly([
-        "teamName",
-        "teamNameNormalized",
-        "rankingOptIn",
-        "playerNames",
-        "normalizedPlayerNames",
-        "createdAt",
-        "updatedAt"
-      ])
-      && request.resource.data.teamNameNormalized == teamId
-      && request.resource.data.teamName is string
-      && request.resource.data.teamNameNormalized is string
-      && request.resource.data.rankingOptIn is bool
-      && (!("playerNames" in request.resource.data) || request.resource.data.playerNames is list)
-      && (!("normalizedPlayerNames" in request.resource.data) || request.resource.data.normalizedPlayerNames is list);
       allow delete: if false;
     }
 
@@ -156,7 +232,9 @@ service cloud.firestore {
       allow read: if true;
       allow create: if request.resource.data.keys().hasOnly([
         "quizId",
+        "eventId",
         "lobbyCode",
+        "teamId",
         "teamName",
         "playerName",
         "contact",
@@ -177,6 +255,12 @@ service cloud.firestore {
       && request.resource.data.anonymous is bool
       && request.resource.data.clientId is string
       && request.resource.data.dateKey is string;
+      allow update, delete: if false;
+    }
+
+    match /auditLog/{logId} {
+      allow read: if true;
+      allow create: if true;
       allow update, delete: if false;
     }
 
