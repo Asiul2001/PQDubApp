@@ -197,6 +197,23 @@ function canManageManagerRecords(activeManager, managers) {
   return !managers.some((manager) => manager.headManager);
 }
 
+function useIsNarrowScreen(breakpoint = 760) {
+  const [isNarrow, setIsNarrow] = useState(() =>
+    typeof window === "undefined" ? false : window.innerWidth <= breakpoint,
+  );
+
+  useEffect(() => {
+    const updateWidth = () => setIsNarrow(window.innerWidth <= breakpoint);
+
+    updateWidth();
+    window.addEventListener("resize", updateWidth);
+
+    return () => window.removeEventListener("resize", updateWidth);
+  }, [breakpoint]);
+
+  return isNarrow;
+}
+
 function getClientId() {
   const storageKey = "pqAppClientId";
   const existingId = window.localStorage.getItem(storageKey);
@@ -1734,13 +1751,26 @@ function App() {
 
     try {
       const sessionRef = doc(db, "quizSessions", sessionId);
+      const startedAt = new Date();
 
-      await updateDoc(sessionRef, {
-        [`roundStarts.${roundId}`]: serverTimestamp(),
+      setSessionData((currentSession) => ({
+        ...(currentSession || {}),
+        roundStarts: {
+          ...(currentSession?.roundStarts || {}),
+          [roundId]: startedAt,
+        },
+        updatedAt: startedAt,
+      }));
+
+      await setDoc(sessionRef, {
+        roundStarts: {
+          [roundId]: startedAt,
+        },
         updatedAt: serverTimestamp(),
-      });
+      }, { merge: true });
     } catch (error) {
       console.error("TEAM ROUND START ERROR:", error);
+      setMessage(`Timer konnte nicht gestartet werden: ${error.message}`);
     }
   }
 
@@ -2659,6 +2689,7 @@ function RankingScreen({
   sessionId,
 }) {
   const [rankingTab, setRankingTab] = useState("daily");
+  const isNarrow = useIsNarrowScreen();
   const dailyRanking = getDailyRankingWithTiebreakers(registeredTeams, lobbyData);
   const dailyTeams = dailyRanking.ranking;
   const yearlyTeams = aggregateYearlyRanking(allTeams || registeredTeams);
@@ -2801,7 +2832,7 @@ function RankingScreen({
                 key={team.id}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "48px 1fr auto",
+                  gridTemplateColumns: isNarrow ? "1fr" : "48px 1fr auto",
                   gap: 12,
                   alignItems: "center",
                   padding: 14,
@@ -2846,6 +2877,7 @@ function FaqScreen({
   onSubmitFeedback,
   sessionData,
 }) {
+  const isNarrow = useIsNarrowScreen();
   const [feedbackDraft, setFeedbackDraft] = useState({
     anonymous: true,
     category: "meinung",
@@ -2992,7 +3024,13 @@ function FaqScreen({
             </label>
 
             {!feedbackDraft.anonymous && (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: isNarrow ? "1fr" : "1fr 1fr",
+                  gap: 12,
+                }}
+              >
                 <label style={{ display: "grid", gap: 8 }}>
                   Name
                   <input
@@ -3092,6 +3130,7 @@ function AdminScreen({
 }) {
   const [personalTab, setPersonalTab] = useState("live");
   const canManageManagers = canManageManagerRecords(activeManager, managers);
+  const isNarrow = useIsNarrowScreen();
   const selectedQuestions = selectedRound.questionIds
     .map((questionId) => questions[questionId])
     .filter(Boolean);
@@ -3138,11 +3177,12 @@ function AdminScreen({
       <section
         style={{
           maxWidth: 980,
-          margin: "40px auto",
-          padding: 28,
+          margin: isNarrow ? "18px auto" : "40px auto",
+          padding: isNarrow ? 14 : 28,
           border: "1px solid #1f2937",
           borderRadius: 16,
           background: "#111827",
+          overflow: "hidden",
         }}
       >
         <p style={{ marginTop: 0, color: "#93c5fd", fontWeight: 700 }}>
@@ -3276,6 +3316,7 @@ function TiebreakerPanel({
   onStart,
   teams,
 }) {
+  const isNarrow = useIsNarrowScreen();
   const dailyRanking = getDailyRankingWithTiebreakers(teams, lobbyData);
   const tiedTeams = dailyRanking.tieGroups.flatMap((group) => group.teams);
   const uniqueTiedTeams = Array.from(
@@ -3365,7 +3406,7 @@ function TiebreakerPanel({
                   key={team.id}
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "1fr auto auto",
+                    gridTemplateColumns: isNarrow ? "1fr" : "1fr auto auto",
                     gap: 10,
                     alignItems: "center",
                     padding: 12,
@@ -3405,6 +3446,7 @@ function TiebreakerPanel({
 function TeamDirectory({ pubQuizzes, teams }) {
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
+  const isNarrow = useIsNarrowScreen();
   const sortedTeams = aggregateTeamDirectory(teams);
   const selectedTeam =
     sortedTeams.find((team) => team.id === selectedTeamId) || sortedTeams[0];
@@ -3439,7 +3481,9 @@ function TeamDirectory({ pubQuizzes, teams }) {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(260px, 1fr) minmax(280px, 1.2fr)",
+          gridTemplateColumns: isNarrow
+            ? "1fr"
+            : "minmax(260px, 1fr) minmax(280px, 1.2fr)",
           gap: 16,
         }}
       >
@@ -3459,7 +3503,7 @@ function TeamDirectory({ pubQuizzes, teams }) {
                   }}
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "1fr auto",
+                    gridTemplateColumns: isNarrow ? "1fr" : "1fr auto",
                     gap: 12,
                     alignItems: "center",
                     padding: 12,
@@ -3522,7 +3566,7 @@ function TeamDirectory({ pubQuizzes, teams }) {
                   key={personName}
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "1fr 1fr",
+                    gridTemplateColumns: isNarrow ? "1fr" : "1fr 1fr",
                     gap: 10,
                     padding: 10,
                     border: "1px solid #1f2937",
@@ -3559,7 +3603,7 @@ function TeamDirectory({ pubQuizzes, teams }) {
                       onClick={() => setSelectedSessionId(session.id)}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "1fr auto",
+                        gridTemplateColumns: isNarrow ? "1fr" : "1fr auto",
                         gap: 12,
                         alignItems: "center",
                         padding: 10,
@@ -3639,6 +3683,7 @@ function TeamDirectory({ pubQuizzes, teams }) {
   );
 }
 function ManagerDirectory({ activeManager, managers, message, onSaveManager }) {
+  const isNarrow = useIsNarrowScreen();
   const [draft, setDraft] = useState({
     active: true,
     headManager: false,
@@ -3683,7 +3728,9 @@ function ManagerDirectory({ activeManager, managers, message, onSaveManager }) {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(260px, 1fr) minmax(280px, 1fr)",
+          gridTemplateColumns: isNarrow
+            ? "1fr"
+            : "minmax(260px, 1fr) minmax(280px, 1fr)",
           gap: 16,
         }}
       >
@@ -3826,6 +3873,7 @@ function LiveControlPanel({
   const roundUnlocked = canRevealAnswers || answersRevealed;
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
+  const isNarrow = useIsNarrowScreen();
 
   return (
     <>
@@ -3912,7 +3960,7 @@ function LiveControlPanel({
                 key={team.id}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr auto",
+                  gridTemplateColumns: isNarrow ? "1fr" : "1fr auto",
                   gap: 12,
                   alignItems: "center",
                   padding: 12,
@@ -3963,6 +4011,7 @@ function PubQuizQrPanel({ quizCode }) {
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState("");
+  const isNarrow = useIsNarrowScreen();
   const cleanedCode = normalizeQuizCode(quizCode || "");
   const startUrl = useMemo(() => createQuizStartUrl(cleanedCode), [cleanedCode]);
 
@@ -4019,9 +4068,10 @@ function PubQuizQrPanel({ quizCode }) {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "auto minmax(0, 1fr)",
+        gridTemplateColumns: isNarrow ? "1fr" : "auto minmax(0, 1fr)",
         gap: 14,
         alignItems: "center",
+        justifyItems: isNarrow ? "center" : "stretch",
         padding: 14,
         border: "1px solid #1f2937",
         borderRadius: 12,
@@ -4153,6 +4203,7 @@ function PubQuizManager({ message, onLoadPubQuizByCode, onSavePubQuiz, pubQuizze
   const [draft, setDraft] = useState(() => createBlankPubQuizDraft());
   const [openRoundId, setOpenRoundId] = useState("round1");
   const [codeDraft, setCodeDraft] = useState("");
+  const isNarrow = useIsNarrowScreen();
 
   function updateDraftField(field, value) {
     setDraft((currentDraft) => ({
@@ -4230,7 +4281,9 @@ function PubQuizManager({ message, onLoadPubQuizByCode, onSavePubQuiz, pubQuizze
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(220px, 0.85fr) minmax(0, 2fr)",
+          gridTemplateColumns: isNarrow
+            ? "1fr"
+            : "minmax(220px, 0.85fr) minmax(0, 2fr)",
           gap: 18,
           alignItems: "start",
         }}
@@ -4451,7 +4504,7 @@ function PubQuizManager({ message, onLoadPubQuizByCode, onSavePubQuiz, pubQuizze
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "1fr 160px",
+                    gridTemplateColumns: isNarrow ? "1fr" : "1fr 160px",
                     gap: 12,
                   }}
                 >
