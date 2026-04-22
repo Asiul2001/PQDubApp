@@ -1,6 +1,20 @@
 # PQDubApp
 
-Pubquiz web app built with React, Vite, and Firebase.
+Broader development of the original PubQuiz app: a reusable live pub quiz
+system with team sessions, manager controls, rankings, tiebreak questions,
+QR-code joins, and Firebase persistence.
+
+## Features
+
+- Pubquiz creation with unique quiz codes
+- QR links that prefill the quiz code for teams
+- Three-round quiz flow with hints and locked correct answers
+- Daily ranking and yearly ranking
+- Optional yearly ranking participation per team
+- Tiebreak question flow for tied top places
+- Manager login with Head Manager permissions
+- Team archive with quiz/date-specific answers
+- Feedback inbox and FAQ
 
 ## Local Development
 
@@ -32,5 +46,5 @@ QR links use the current deployed URL and add the quiz code as a query
 parameter, for example:
 
 ```text
-https://your-name.github.io/your-repo/?quiz=ABC123
+https://asiul2001.github.io/PQDubApp/?quiz=ABC123
 ```
