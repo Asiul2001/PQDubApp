@@ -59,6 +59,8 @@ service cloud.firestore {
         "quizId",
         "lobbyCode",
         "activeRoundId",
+        "answerWindowEndsAt",
+        "answerWindowStartedAt",
         "revealedAnswers",
         "roundStarts",
         "tiebreakerAnswer",
@@ -74,6 +76,8 @@ service cloud.firestore {
       ])
       && request.resource.data.quizId is string
       && request.resource.data.lobbyCode is string
+      && (!("answerWindowEndsAt" in request.resource.data) || request.resource.data.answerWindowEndsAt is timestamp)
+      && (!("answerWindowStartedAt" in request.resource.data) || request.resource.data.answerWindowStartedAt is timestamp)
       && (!("tiebreakerQuestion" in request.resource.data) || request.resource.data.tiebreakerQuestion is string)
       && (!("tiebreakerAnswer" in request.resource.data) || request.resource.data.tiebreakerAnswer is number || request.resource.data.tiebreakerAnswer == null)
       && (!("tiebreakerEstimates" in request.resource.data) || request.resource.data.tiebreakerEstimates is map)

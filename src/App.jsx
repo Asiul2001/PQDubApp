@@ -64,6 +64,8 @@ const pointMessages = [
   "Punkt eingesackt!",
 ];
 
+const ANSWER_WINDOW_MS = 5 * 60 * 60 * 1000;
+
 function normalizeTeamName(name) {
   return name
     .toLowerCase()
@@ -180,6 +182,12 @@ function getCompletionValue(session) {
     session?.lastSeenAt ||
     session?.createdAt
   );
+}
+
+function isAnswerWindowClosed(lobbyData, now) {
+  const endsAtMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
+
+  return Boolean(endsAtMs && now > endsAtMs);
 }
 
 function canManageManagerRecords(activeManager, managers) {
@@ -1257,14 +1265,22 @@ function App() {
     }));
   }
 
-  async function ensureLobby(cleanedCode) {
+  async function ensureLobby(cleanedCode, { deployForToday = false } = {}) {
     const lobbyRef = doc(db, "quizLobbies", getLobbyId(cleanedCode));
+    const deployedAt = new Date();
+    const answerWindowEndsAt = new Date(deployedAt.getTime() + ANSWER_WINDOW_MS);
 
     await setDoc(
       lobbyRef,
       {
         quizId: latestQuizId,
         lobbyCode: cleanedCode,
+        ...(deployForToday
+          ? {
+              answerWindowEndsAt,
+              answerWindowStartedAt: deployedAt,
+            }
+          : {}),
         updatedAt: serverTimestamp(),
       },
       { merge: true },
@@ -1601,6 +1617,11 @@ function App() {
   async function checkAndSaveAnswer(question) {
     if (!sessionId) return;
 
+    if (isAnswerWindowClosed(lobbyData, now)) {
+      setMessage("Die 5-Stunden-Antwortzeit fuer dieses Quiz ist abgelaufen.");
+      return;
+    }
+
     const answer = answerDrafts[question.id] ?? "";
     const result = checkAnswer(answer, question.acceptedAnswers, question.points);
 
@@ -1692,6 +1713,8 @@ function App() {
       await setDoc(
         lobbyRef,
         {
+          quizId: latestQuizId,
+          lobbyCode: sessionData.lobbyCode,
           activeRoundId: roundId,
           unlockedRounds: {
             [roundId]: true,
@@ -1884,7 +1907,7 @@ function App() {
       setActiveRoundId(
         selectedPubQuiz.rounds?.[0]?.id || defaultQuizRounds[0].id,
       );
-      await ensureLobby(cleanedCode);
+      await ensureLobby(cleanedCode, { deployForToday: true });
       setSessionData((currentSession) => ({
         ...(currentSession || {}),
         lobbyCode: cleanedCode,
@@ -1896,7 +1919,9 @@ function App() {
           currentSession?.teamName || activeManager.name || activeManager.id,
         totalPoints: currentSession?.totalPoints || 0,
       }));
-      setQuizManagerMessage(`Quiz ${cleanedCode} geladen.`);
+      setQuizManagerMessage(
+        `Quiz ${cleanedCode} fuer heute geladen. Antworten sind 5 Stunden offen.`,
+      );
       return true;
     } catch (error) {
       console.error("QUIZ CODE LOAD ERROR:", error);
@@ -3159,6 +3184,8 @@ function AdminScreen({
           <LiveControlPanel
             answersRevealed={answersRevealed}
             canRevealAnswers={canRevealAnswers}
+            lobbyData={lobbyData}
+            now={now}
             onRevealRoundAnswers={onRevealRoundAnswers}
             onRoundChange={onRoundChange}
             onUnlockRound={onUnlockRound}
@@ -3786,6 +3813,8 @@ function ManagerDirectory({ activeManager, managers, message, onSaveManager }) {
 function LiveControlPanel({
   answersRevealed,
   canRevealAnswers,
+  lobbyData,
+  now,
   onRevealRoundAnswers,
   onRoundChange,
   onUnlockRound,
@@ -3795,6 +3824,8 @@ function LiveControlPanel({
   teamStatuses,
 }) {
   const roundUnlocked = canRevealAnswers || answersRevealed;
+  const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
+  const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
 
   return (
     <>
@@ -3834,6 +3865,17 @@ function LiveControlPanel({
           <p style={{ color: "#cbd5e1" }}>
             Status: {roundUnlocked ? "freigeschaltet" : "noch gesperrt"} -
             Lösungen: {answersRevealed ? "freigeschaltet" : "gesperrt"}
+          </p>
+          <p style={{ color: answerWindowClosed ? "#fca5a5" : "#cbd5e1" }}>
+            Antworten:{" "}
+            {answerWindowEndsMs
+              ? answerWindowClosed
+                ? "geschlossen"
+                : `offen bis ${new Date(answerWindowEndsMs).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}`
+              : "erst nach Quiz-Code laden aktiv"}
           </p>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button onClick={() => onUnlockRound(selectedRound.id)}>
@@ -4835,6 +4877,8 @@ function QuizScreen({
   const roundHasStarted = roundStartMs !== null;
   const roundExpired = roundHasStarted && remainingRoundMs <= 0;
   const answersRevealed = isRoundAnswersRevealed(lobbyData, activeRound.id);
+  const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
+  const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
   const [pendingHint, setPendingHint] = useState(null);
 
   async function confirmHint() {
@@ -4907,17 +4951,28 @@ function QuizScreen({
           <p
             style={{
               margin: "8px 0 0",
-              color: roundExpired ? "#fca5a5" : "#fde68a",
+              color: roundExpired || answerWindowClosed ? "#fca5a5" : "#fde68a",
               fontSize: 22,
               fontWeight: 700,
             }}
           >
-            {roundHasStarted
+            {answerWindowClosed
+              ? "Antwortzeit geschlossen"
+              : roundHasStarted
               ? roundExpired
                 ? "Zeit abgelaufen"
                 : formatDuration(remainingRoundMs)
               : "Noch nicht gestartet"}
           </p>
+          {answerWindowEndsMs > 0 && !answerWindowClosed && (
+            <p style={{ margin: "8px 0 0", color: "#cbd5e1" }}>
+              Antworten offen bis{" "}
+              {new Date(answerWindowEndsMs).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </p>
+          )}
         </div>
       </header>
 
@@ -5025,7 +5080,7 @@ function QuizScreen({
           activeQuestions.map((question, index) => (
             <QuestionCard
               answer={answerDrafts[question.id] ?? ""}
-              disabled={!roundUnlocked || roundExpired}
+              disabled={!roundUnlocked || roundExpired || answerWindowClosed}
               hintBudget={hintBudget}
               hintRevealed={Boolean(revealedHints[question.id])}
               isSixthQuestion={index === 5}
