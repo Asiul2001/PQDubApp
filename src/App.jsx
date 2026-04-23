@@ -946,24 +946,20 @@ function escapeHtml(value) {
 
 function renderPrintableTeamQuizCopy(round, quizTitle, copyLabel) {
   const category = round.category || round.title;
+  const roundNumber = round.id?.match(/\d+/)?.[0] || round.title.match(/\d+/)?.[0] || "";
 
   return `
     <section class="copy">
-      <header class="copy-header">
-        <div>
-          <p class="eyebrow">${escapeHtml(copyLabel)}</p>
-          <h1>${escapeHtml(category)}</h1>
-        </div>
-        <p class="meta">${escapeHtml(quizTitle)} - ${escapeHtml(round.title)}</p>
-      </header>
-      <ol>
+      <p class="copy-title">${escapeHtml(quizTitle)} - ${escapeHtml(copyLabel)}</p>
+      <p class="category-line">Kategorie ${escapeHtml(roundNumber)} "${escapeHtml(category)}":</p>
+      <div class="questions">
         ${round.questions
           .map(
             (question, index) => `
-              <li>
+              <section class="question-block">
                 <div class="question-title">Frage ${index + 1}${
-                  index === 4 ? " - Bildfrage" : ""
-                }</div>
+                  Number(question.points) > 1 ? ` (${escapeHtml(question.points)} Punkte)` : ""
+                }:</div>
                 <div class="prompt">${escapeHtml(question.prompt || "Noch keine Frage eingetragen.")}</div>
                 ${
                   question.mediaNote
@@ -986,12 +982,11 @@ function renderPrintableTeamQuizCopy(round, quizTitle, copyLabel) {
                       </div>`
                     : ""
                 }
-                <div class="answer-line"></div>
-              </li>
+              </section>
             `,
           )
           .join("")}
-      </ol>
+      </div>
     </section>
   `;
 }
@@ -1029,7 +1024,7 @@ function createPrintableTeamQuizPdf(draft) {
             min-height: 277mm;
             display: grid;
             grid-template-rows: 1fr 1fr;
-            gap: 8mm;
+            gap: 10mm;
             page-break-after: always;
           }
 
@@ -1038,92 +1033,60 @@ function createPrintableTeamQuizPdf(draft) {
           }
 
           .copy {
-            border: 1px solid #111827;
-            padding: 7mm;
+            padding: 5mm 9mm;
             overflow: hidden;
           }
 
-          .copy-header {
-            display: flex;
-            justify-content: space-between;
-            gap: 10mm;
-            align-items: flex-start;
-            border-bottom: 1px solid #111827;
-            padding-bottom: 4mm;
-            margin-bottom: 4mm;
+          .copy-title {
+            margin: 0 0 1mm;
+            font-size: 7pt;
+            color: #6b7280;
           }
 
-          .eyebrow {
-            margin: 0 0 2mm;
-            font-size: 9pt;
-            font-weight: 700;
-            text-transform: uppercase;
-          }
-
-          h1 {
-            margin: 0;
-            font-size: 22pt;
-          }
-
-          .meta {
-            margin: 0;
-            max-width: 58mm;
-            text-align: right;
+          .category-line {
+            margin: 0 0 2.5mm;
             font-size: 9pt;
             font-weight: 700;
           }
 
-          ol {
-            margin: 0;
-            padding-left: 7mm;
+          .questions {
+            display: grid;
+            gap: 1.5mm;
           }
 
-          li {
-            margin-bottom: 3mm;
+          .question-block {
             break-inside: avoid;
           }
 
           .question-title {
             font-weight: 700;
-            font-size: 10pt;
+            font-size: 8.5pt;
           }
 
           .prompt {
-            margin-top: 1mm;
-            font-size: 10pt;
-          }
-
-          .note,
-          .answer-line {
-            margin-top: 1mm;
+            margin-top: 0.3mm;
+            font-size: 9pt;
+            line-height: 1.22;
           }
 
           .print-images {
             display: flex;
-            gap: 3mm;
+            gap: 2mm;
             flex-wrap: wrap;
             align-items: flex-start;
-            margin-top: 2mm;
+            margin-top: 1mm;
           }
 
           .print-images img {
-            max-width: 5cm;
-            max-height: 5cm;
+            max-width: 33mm;
+            max-height: 25mm;
             object-fit: contain;
-            border: 1px solid #d1d5db;
           }
 
           .note {
-            font-size: 8.8pt;
-          }
-
-          .note {
+            margin-top: 0.5mm;
+            font-size: 7.5pt;
             color: #374151;
-          }
-
-          .answer-line {
-            height: 7mm;
-            border-bottom: 1px solid #111827;
           }
         </style>
       </head>
@@ -3171,33 +3134,61 @@ function RankingScreen({
                 key={team.id}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: isNarrow ? "1fr" : "48px 1fr auto",
-                  gap: 12,
+                  gridTemplateColumns: "52px minmax(0, 1fr) auto",
+                  gap: isNarrow ? 8 : 14,
                   alignItems: "center",
-                  padding: 14,
+                  padding: isNarrow ? "13px 12px" : "14px 16px",
                   border: "1px solid #1f2937",
                   borderRadius: 12,
                   background: "#0b1220",
                 }}
               >
-                <strong>#{index + 1}</strong>
-                <span>
-                  {team.teamName}
+                <strong
+                  style={{
+                    color: "#93c5fd",
+                    fontSize: isNarrow ? 18 : 20,
+                  }}
+                >
+                  {index + 1}.
+                </strong>
+                <div style={{ minWidth: 0, textAlign: "left" }}>
+                  <strong
+                    style={{
+                      display: "block",
+                      color: "#f8fafc",
+                      fontSize: isNarrow ? 18 : 20,
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {team.teamName}
+                  </strong>
+                  <span style={{ display: "block", marginTop: 3, color: "#94a3b8", fontSize: 13 }}>
                   {rankingTab === "yearly" && team.podiums > 0
-                    ? ` - ${team.podiums} Podien`
+                    ? `${team.podiums} Podien`
                     : ""}
                   {rankingTab === "yearly"
-                    ? ` - ${team.totalQuizPoints || 0} Tagespunkte`
+                    ? `${team.podiums > 0 ? " · " : ""}${team.totalQuizPoints || 0} Tagespunkte`
                     : ""}
                   {rankingTab === "daily" &&
                   hasTiebreakerAnswer &&
                   getEstimateValue(lobbyData, team.id) !== null
-                    ? ` - Schätzung ${getEstimateValue(lobbyData, team.id)}`
+                    ? `Schätzung ${getEstimateValue(lobbyData, team.id)}`
                     : ""}
-                </span>
-                <strong>
-                  {team.totalPoints || 0}{" "}
-                  {rankingTab === "yearly" ? "Jahrespunkte" : "Punkte"}
+                  </span>
+                </div>
+                <strong
+                  style={{
+                    justifySelf: "end",
+                    color: "#f8fafc",
+                    fontSize: isNarrow ? 18 : 20,
+                    textAlign: "right",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {team.totalPoints || 0}
+                  <span style={{ marginLeft: 4, color: "#94a3b8", fontSize: 13 }}>
+                    Pkt.
+                  </span>
                 </strong>
               </div>
             ))}
