@@ -1073,8 +1073,11 @@ function createPrintableTeamQuizPdf(draft) {
             display: grid;
             grid-template-rows: calc((277mm - 6mm) / 2) calc((277mm - 6mm) / 2);
             gap: 6mm;
-            page-break-after: always;
             overflow: hidden;
+            break-after: page;
+            break-inside: avoid;
+            page-break-after: always;
+            page-break-inside: avoid;
           }
 
           .page:last-child {
@@ -1086,6 +1089,7 @@ function createPrintableTeamQuizPdf(draft) {
             padding: 5mm 9mm;
             overflow: hidden;
             break-inside: avoid;
+            page-break-inside: avoid;
           }
 
           .copy-title {
@@ -1106,7 +1110,8 @@ function createPrintableTeamQuizPdf(draft) {
           }
 
           .question-block {
-            break-inside: avoid;
+            break-inside: auto;
+            page-break-inside: auto;
           }
 
           .question-title {
