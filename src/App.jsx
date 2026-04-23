@@ -594,6 +594,7 @@ function createEmptyPubQuizQuestion(roundIndex, questionIndex) {
     answersText: "",
     points: 1,
     images: [],
+    imagesRemoved: false,
     mediaNote: questionIndex === 4 ? "Bildfrage oder Bildserie" : "",
   };
 }
@@ -647,6 +648,7 @@ function createPubQuizDraftFromData(data) {
               ? savedQuestion.acceptedAnswers.join("\n")
               : savedQuestion.answersText || "",
             images: savedQuestion.images || [],
+            imagesRemoved: false,
           };
         }),
       };
@@ -681,6 +683,52 @@ function sanitizePubQuizDraft(draft, { includeImages = true } = {}) {
         images: includeImages ? question.images || [] : [],
         mediaNote: question.mediaNote.trim(),
       })),
+    })),
+  };
+}
+
+function getPubQuizImageStorageEstimate(draft) {
+  return draft.rounds.reduce(
+    (total, round) =>
+      total +
+      round.questions.reduce(
+        (questionTotal, question) =>
+          questionTotal +
+          (question.images || []).reduce(
+            (imageTotal, image) => imageTotal + String(image.src || "").length,
+            0,
+          ),
+        0,
+      ),
+    0,
+  );
+}
+
+function preserveExistingPubQuizImages(payload, existingData, draft) {
+  if (!existingData?.rounds?.length) return payload;
+
+  return {
+    ...payload,
+    rounds: payload.rounds.map((round, roundIndex) => ({
+      ...round,
+      questions: round.questions.map((question, questionIndex) => {
+        const draftQuestion = draft.rounds?.[roundIndex]?.questions?.[questionIndex];
+        const existingImages =
+          existingData.rounds?.[roundIndex]?.questions?.[questionIndex]?.images || [];
+
+        if (
+          question.images?.length ||
+          !existingImages.length ||
+          draftQuestion?.imagesRemoved
+        ) {
+          return question;
+        }
+
+        return {
+          ...question,
+          images: existingImages,
+        };
+      }),
     })),
   };
 }
@@ -2108,7 +2156,15 @@ function App() {
       draft.id ||
       `pubquiz_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const quizRef = doc(db, "pubQuizzes", quizId);
-    const payload = sanitizePubQuizDraft(draft, { includeImages: false });
+    let payload = sanitizePubQuizDraft(draft, { includeImages: true });
+    const imageStorageEstimate = getPubQuizImageStorageEstimate(draft);
+
+    if (imageStorageEstimate > 850000) {
+      setQuizManagerMessage(
+        "Die Bilder sind zu gross zum Speichern. Bitte kleinere Bilder verwenden oder weniger Bilder hochladen.",
+      );
+      return null;
+    }
     const existingCodes = new Set(
       pubQuizzes
         .filter((pubQuiz) => pubQuiz.id !== quizId)
@@ -2122,12 +2178,32 @@ function App() {
     }
 
     try {
+      const existingSnapshot = await getDoc(quizRef);
+
+      if (existingSnapshot.exists()) {
+        payload = preserveExistingPubQuizImages(
+          payload,
+          existingSnapshot.data(),
+          draft,
+        );
+      }
+
+      const finalImageStorageEstimate = getPubQuizImageStorageEstimate(payload);
+
+      if (finalImageStorageEstimate > 850000) {
+        setQuizManagerMessage(
+          "Die gespeicherten Bilder sind zu gross fuer ein Pubquiz. Bitte kleinere Bilder verwenden oder weniger Bilder hochladen.",
+        );
+        return null;
+      }
+
       await setDoc(
         quizRef,
         {
           ...payload,
           id: quizId,
           quizCode,
+          imageStorageEstimate: finalImageStorageEstimate,
           updatedAt: serverTimestamp(),
           createdAt: draft.id ? draft.createdAt || serverTimestamp() : serverTimestamp(),
         },
@@ -4589,7 +4665,25 @@ function PubQuizManager({ message, onLoadPubQuizByCode, onSavePubQuiz, pubQuizze
 
     const nextImages = await readFilesAsImages(files);
 
-    updateQuestion(roundIndex, questionIndex, "images", nextImages);
+    setDraft((currentDraft) => ({
+      ...currentDraft,
+      rounds: currentDraft.rounds.map((round, currentRoundIndex) => {
+        if (currentRoundIndex !== roundIndex) return round;
+
+        return {
+          ...round,
+          questions: round.questions.map((question, currentQuestionIndex) =>
+            currentQuestionIndex === questionIndex
+              ? {
+                  ...question,
+                  images: nextImages,
+                  imagesRemoved: false,
+                }
+              : question,
+          ),
+        };
+      }),
+    }));
   }
 
   async function handleLoadCode(e) {
@@ -5017,12 +5111,30 @@ function PubQuizManager({ message, onLoadPubQuizByCode, onSavePubQuiz, pubQuizze
                                 ))}
                                 <button
                                   onClick={() =>
-                                    updateQuestion(
-                                      roundIndex,
-                                      questionIndex,
-                                      "images",
-                                      [],
-                                    )
+                                    setDraft((currentDraft) => ({
+                                      ...currentDraft,
+                                      rounds: currentDraft.rounds.map(
+                                        (currentRound, currentRoundIndex) => {
+                                          if (currentRoundIndex !== roundIndex) {
+                                            return currentRound;
+                                          }
+
+                                          return {
+                                            ...currentRound,
+                                            questions: currentRound.questions.map(
+                                              (currentQuestion, currentQuestionIndex) =>
+                                                currentQuestionIndex === questionIndex
+                                                  ? {
+                                                      ...currentQuestion,
+                                                      images: [],
+                                                      imagesRemoved: true,
+                                                    }
+                                                  : currentQuestion,
+                                            ),
+                                          };
+                                        },
+                                      ),
+                                    }))
                                   }
                                 >
                                   Bilder entfernen
