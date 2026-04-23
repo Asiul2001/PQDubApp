@@ -160,12 +160,9 @@ function getTeammateRef(teamId, teammateId) {
 
 function getRoundStartMs(lobbyData, roundId) {
   const startedAt = lobbyData?.roundStarts?.[roundId];
+  const startedAtMs = getTimestampMs(startedAt);
 
-  if (!startedAt) return null;
-  if (typeof startedAt.toMillis === "function") return startedAt.toMillis();
-  if (typeof startedAt.seconds === "number") return startedAt.seconds * 1000;
-
-  return null;
+  return startedAtMs || null;
 }
 
 function isRoundUnlocked(lobbyData, roundId) {
@@ -188,6 +185,12 @@ function getTimestampMs(value) {
   if (!value) return 0;
   if (typeof value.toMillis === "function") return value.toMillis();
   if (typeof value.seconds === "number") return value.seconds * 1000;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
   return 0;
 }
 
@@ -2503,6 +2506,7 @@ function App() {
       quizRounds={quizRounds}
       isAdmin={isAdmin}
       canOpenRanking
+      message={message}
       sessionData={sessionData}
       sessionId={sessionId}
       tiebreakerClientId={clientId}
@@ -5131,6 +5135,7 @@ function QuizScreen({
   answerDrafts,
   canOpenRanking,
   lobbyData,
+  message,
   now,
   isAdmin,
   onAnswerChange,
@@ -5272,6 +5277,23 @@ function QuizScreen({
           )}
         </div>
       </header>
+
+      {message && (
+        <p
+          style={{
+            maxWidth: 980,
+            margin: "0 auto 16px",
+            padding: "10px 12px",
+            border: "1px solid #7f1d1d",
+            borderRadius: 12,
+            background: "#450a0a",
+            color: "#fecaca",
+            fontWeight: 700,
+          }}
+        >
+          {message}
+        </p>
+      )}
 
       {tiebreakerEligible && tiebreakerFinalRoundFinished && (
         <TiebreakerTeamPanel
