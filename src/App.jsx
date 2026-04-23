@@ -998,42 +998,44 @@ function renderPrintableTeamQuizCopy(round, quizTitle, copyLabel) {
 
   return `
     <section class="copy">
-      <p class="copy-title">${escapeHtml(quizTitle)} - ${escapeHtml(copyLabel)}</p>
-      <p class="category-line">Kategorie ${escapeHtml(roundNumber)} "${escapeHtml(category)}":</p>
-      <div class="questions">
-        ${round.questions
-          .map(
-            (question, index) => `
-              <section class="question-block">
-                <div class="question-title">Frage ${index + 1}${
-                  Number(question.points) > 1 ? ` (${escapeHtml(question.points)} Punkte)` : ""
-                }:</div>
-                <div class="prompt">${escapeHtml(question.prompt || "Noch keine Frage eingetragen.")}</div>
-                ${
-                  question.mediaNote
-                    ? `<div class="note">Bildnotiz: ${escapeHtml(question.mediaNote)}</div>`
-                    : ""
-                }
-                ${
-                  question.images?.length
-                    ? `<div class="print-images">
-                        ${question.images
-                          .map(
-                            (image) => `
-                              <img
-                                alt="${escapeHtml(image.alt || image.name || "Bildfrage")}"
-                                src="${escapeHtml(image.src)}"
-                              />
-                            `,
-                          )
-                          .join("")}
-                      </div>`
-                    : ""
-                }
-              </section>
-            `,
-          )
-          .join("")}
+      <div class="copy-inner">
+        <p class="copy-title">${escapeHtml(quizTitle)} - ${escapeHtml(copyLabel)}</p>
+        <p class="category-line">Kategorie ${escapeHtml(roundNumber)} "${escapeHtml(category)}":</p>
+        <div class="questions">
+          ${round.questions
+            .map(
+              (question, index) => `
+                <section class="question-block">
+                  <div class="question-title">Frage ${index + 1}${
+                    Number(question.points) > 1 ? ` (${escapeHtml(question.points)} Punkte)` : ""
+                  }:</div>
+                  <div class="prompt">${escapeHtml(question.prompt || "Noch keine Frage eingetragen.")}</div>
+                  ${
+                    question.mediaNote
+                      ? `<div class="note">Bildnotiz: ${escapeHtml(question.mediaNote)}</div>`
+                      : ""
+                  }
+                  ${
+                    question.images?.length
+                      ? `<div class="print-images">
+                          ${question.images
+                            .map(
+                              (image) => `
+                                <img
+                                  alt="${escapeHtml(image.alt || image.name || "Bildfrage")}"
+                                  src="${escapeHtml(image.src)}"
+                                />
+                              `,
+                            )
+                            .join("")}
+                        </div>`
+                      : ""
+                  }
+                </section>
+              `,
+            )
+            .join("")}
+        </div>
       </div>
     </section>
   `;
@@ -1069,10 +1071,8 @@ function createPrintableTeamQuizPdf(draft) {
           }
 
           .page {
+            position: relative;
             height: 277mm;
-            display: grid;
-            grid-template-rows: calc((277mm - 6mm) / 2) calc((277mm - 6mm) / 2);
-            gap: 6mm;
             overflow: hidden;
             break-after: page;
             break-inside: avoid;
@@ -1085,6 +1085,9 @@ function createPrintableTeamQuizPdf(draft) {
           }
 
           .copy {
+            position: absolute;
+            left: 0;
+            right: 0;
             height: calc((277mm - 6mm) / 2);
             padding: 5mm 9mm;
             overflow: hidden;
@@ -1092,21 +1095,34 @@ function createPrintableTeamQuizPdf(draft) {
             page-break-inside: avoid;
           }
 
+          .copy:first-child {
+            top: 0;
+          }
+
+          .copy:last-child {
+            bottom: 0;
+          }
+
+          .copy-inner {
+            transform-origin: top left;
+            width: 100%;
+          }
+
           .copy-title {
             margin: 0 0 1mm;
-            font-size: 7pt;
+            font-size: 6.5pt;
             color: #6b7280;
           }
 
           .category-line {
-            margin: 0 0 2.5mm;
-            font-size: 9pt;
+            margin: 0 0 1.5mm;
+            font-size: 8.5pt;
             font-weight: 700;
           }
 
           .questions {
             display: grid;
-            gap: 1.5mm;
+            gap: 0.9mm;
           }
 
           .question-block {
@@ -1116,21 +1132,21 @@ function createPrintableTeamQuizPdf(draft) {
 
           .question-title {
             font-weight: 700;
-            font-size: 8.5pt;
+            font-size: 8pt;
           }
 
           .prompt {
-            margin-top: 0.3mm;
-            font-size: 9pt;
-            line-height: 1.22;
+            margin-top: 0.1mm;
+            font-size: 8.4pt;
+            line-height: 1.16;
           }
 
           .print-images {
             display: flex;
-            gap: 2mm;
+            gap: 1.3mm;
             flex-wrap: wrap;
             align-items: flex-start;
-            margin-top: 1mm;
+            margin-top: 0.5mm;
           }
 
           .print-images img {
@@ -1140,8 +1156,8 @@ function createPrintableTeamQuizPdf(draft) {
           }
 
           .note {
-            margin-top: 0.5mm;
-            font-size: 7.5pt;
+            margin-top: 0.2mm;
+            font-size: 7pt;
             color: #374151;
           }
         </style>
@@ -1158,7 +1174,43 @@ function createPrintableTeamQuizPdf(draft) {
           )
           .join("")}
         <script>
-          window.addEventListener("load", () => {
+          function fitQuizCopies() {
+            document.querySelectorAll(".copy").forEach((copy) => {
+              const inner = copy.querySelector(".copy-inner");
+
+              if (!inner) return;
+
+              inner.style.transform = "none";
+              inner.style.width = "100%";
+
+              const availableHeight = copy.clientHeight;
+              const availableWidth = copy.clientWidth;
+              const neededHeight = inner.scrollHeight;
+              const neededWidth = inner.scrollWidth;
+              const heightScale = availableHeight / Math.max(neededHeight, 1);
+              const widthScale = availableWidth / Math.max(neededWidth, 1);
+              const scale = Math.min(1, heightScale, widthScale);
+
+              if (scale < 1) {
+                inner.style.transform = \`scale(\${scale})\`;
+                inner.style.width = \`\${100 / scale}%\`;
+              }
+            });
+          }
+
+          window.addEventListener("load", async () => {
+            await Promise.all(
+              Array.from(document.images).map((image) =>
+                image.complete
+                  ? Promise.resolve()
+                  : new Promise((resolve) => {
+                      image.onload = resolve;
+                      image.onerror = resolve;
+                    }),
+              ),
+            );
+            fitQuizCopies();
+            window.addEventListener("beforeprint", fitQuizCopies);
             window.focus();
             window.print();
           });
