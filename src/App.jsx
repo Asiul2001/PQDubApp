@@ -1021,11 +1021,12 @@ function createPrintableTeamQuizPdf(draft) {
           }
 
           .page {
-            min-height: 277mm;
+            height: 277mm;
             display: grid;
-            grid-template-rows: 1fr 1fr;
-            gap: 10mm;
+            grid-template-rows: calc((277mm - 6mm) / 2) calc((277mm - 6mm) / 2);
+            gap: 6mm;
             page-break-after: always;
+            overflow: hidden;
           }
 
           .page:last-child {
@@ -1033,8 +1034,10 @@ function createPrintableTeamQuizPdf(draft) {
           }
 
           .copy {
+            height: calc((277mm - 6mm) / 2);
             padding: 5mm 9mm;
             overflow: hidden;
+            break-inside: avoid;
           }
 
           .copy-title {
@@ -1078,8 +1081,8 @@ function createPrintableTeamQuizPdf(draft) {
           }
 
           .print-images img {
-            max-width: 33mm;
-            max-height: 25mm;
+            max-width: 50mm;
+            max-height: 50mm;
             object-fit: contain;
           }
 
