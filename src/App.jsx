@@ -30,7 +30,7 @@ const pageStyle = {
   background: "#0f172a",
   color: "#e5e7eb",
   fontFamily: "Arial, sans-serif",
-  padding: 24,
+  padding: "80px 24px 24px",
   boxSizing: "border-box",
 };
 
@@ -1941,6 +1941,33 @@ function App() {
         updatePayload.completedAt = serverTimestamp();
       }
 
+      setSessionData((currentSession) => ({
+        ...(currentSession || {}),
+        answers: {
+          ...(currentSession?.answers || {}),
+          [question.id]: {
+            ...(currentSession?.answers?.[question.id] || {}),
+            matchedSegments: result.matchedSegments,
+            pointsAwarded:
+              result.result === "correct"
+                ? currentSession?.answers?.[question.id]?.pointsAwarded ||
+                  result.pointsAwarded
+                : 0,
+            result: result.result,
+            text: answer,
+            updatedAt: new Date(),
+            ...(result.result === "correct" ? { locked: true } : {}),
+          },
+        },
+        ...(nextPointToast
+          ? { totalPoints: updatePayload.totalPoints ?? currentSession?.totalPoints ?? 0 }
+          : {}),
+        ...(quizComplete && !currentSession?.completedAt
+          ? { completedAt: new Date() }
+          : {}),
+        updatedAt: new Date(),
+      }));
+
       await updateDoc(sessionRef, updatePayload);
 
       if (nextPointToast) {
@@ -1992,11 +2019,75 @@ function App() {
   }
 
   async function startTeamRound(roundId) {
-    if (!sessionId) return;
+    if (!sessionData?.lobbyCode) {
+      setMessage("Bitte erst einen Quiz-Code laden.");
+      return;
+    }
 
     try {
-      const sessionRef = getTeamSessionRef(sessionData.lobbyCode, sessionId);
+      let effectiveSessionId = sessionId;
+      let effectiveSessionData = sessionData;
+
+      if (!effectiveSessionId) {
+        if (!activeManager) {
+          setMessage("Bitte erst als Team beitreten.");
+          return;
+        }
+
+        const cleanedName =
+          sessionData.teamName || activeManager.name || activeManager.id;
+        const normalized = normalizeTeamName(cleanedName);
+
+        if (!normalized) {
+          setMessage("Teamname ist ungueltig.");
+          return;
+        }
+
+        const displayName =
+          sessionData.playerName || activeManager.name || activeManager.id;
+        const sessionRef = getTeamSessionRef(sessionData.lobbyCode, normalized);
+        const existingSession = await getDoc(sessionRef);
+
+        if (existingSession.exists()) {
+          effectiveSessionData = {
+            id: normalized,
+            ...existingSession.data(),
+            lobbyCode: sessionData.lobbyCode,
+            managerOnly: false,
+          };
+        } else {
+          effectiveSessionData = {
+            ...createSessionRecord({
+              cleanedCode: sessionData.lobbyCode,
+              cleanedName,
+              displayName,
+              normalized,
+              rankingOptIn: false,
+            }),
+            createdAt: new Date(),
+            lastSeenAt: new Date(),
+            managerOnly: false,
+            updatedAt: new Date(),
+          };
+          await setDoc(sessionRef, {
+            ...effectiveSessionData,
+            createdAt: serverTimestamp(),
+            lastSeenAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          }, { merge: true });
+        }
+
+        effectiveSessionId = normalized;
+        setSessionId(effectiveSessionId);
+        setSessionData(effectiveSessionData);
+      }
+
+      const sessionRef = getTeamSessionRef(
+        effectiveSessionData.lobbyCode,
+        effectiveSessionId,
+      );
       const startedAt = new Date();
+      setMessage("");
 
       setSessionData((currentSession) => ({
         ...(currentSession || {}),
@@ -5181,6 +5272,11 @@ function QuizScreen({
   const answersRevealed = isRoundAnswersRevealed(lobbyData, activeRound.id);
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
+  const shouldShowQuizMessage =
+    message &&
+    /abgelaufen|Bitte|Fehler|fehlgeschlagen|konnte|ungueltig|ungültig/i.test(
+      message,
+    );
   const [pendingHint, setPendingHint] = useState(null);
 
   async function confirmHint() {
@@ -5278,7 +5374,7 @@ function QuizScreen({
         </div>
       </header>
 
-      {message && (
+      {shouldShowQuizMessage && (
         <p
           style={{
             maxWidth: 980,
@@ -5383,7 +5479,20 @@ function QuizScreen({
               Die Runde ist freigeschaltet. Startet euren Timer, wenn ihr bereit
               seid.
             </p>
-            <button onClick={() => onStartTeamRound(activeRound.id)}>
+            <button
+              onClick={() => onStartTeamRound(activeRound.id)}
+              style={{
+                minHeight: 48,
+                padding: "12px 18px",
+                borderRadius: 12,
+                border: "1px solid #38bdf8",
+                background: "#0ea5e9",
+                color: "#020617",
+                fontSize: 18,
+                fontWeight: 800,
+                cursor: "pointer",
+              }}
+            >
               Timer für unser Team starten
             </button>
           </div>
@@ -5655,6 +5764,19 @@ function QuestionCard({
   const canRevealHint =
     hintAllowed && !hintRevealed && remainingHints > 0 && !disabled;
   const result = savedQuestion?.result;
+  const [wrongFlash, setWrongFlash] = useState(false);
+  const questionText = question.prompt || question.title;
+  const questionLabel = question.prompt ? question.title : roundTitle;
+
+  useEffect(() => {
+    if (result !== "incorrect") return undefined;
+
+    setWrongFlash(true);
+    const timeout = window.setTimeout(() => setWrongFlash(false), 900);
+
+    return () => window.clearTimeout(timeout);
+  }, [result, savedQuestion?.text]);
+
   const resultStyles = {
     correct: {
       background: "#052e1a",
@@ -5666,6 +5788,13 @@ function QuestionCard({
       borderColor: "#f59e0b",
       boxShadow: "0 0 0 1px rgba(245, 158, 11, 0.25)",
     },
+    incorrect: {
+      background: wrongFlash ? "#7f1d1d" : "#111827",
+      borderColor: wrongFlash ? "#f87171" : "#334155",
+      boxShadow: wrongFlash
+        ? "0 0 0 3px rgba(248, 113, 113, 0.28)"
+        : "none",
+    },
   };
   const statusStyle = resultStyles[result] || {};
 
@@ -5676,15 +5805,26 @@ function QuestionCard({
         padding: 24,
         border: `1px solid ${statusStyle.borderColor || "#1f2937"}`,
         borderRadius: 16,
-        background: statusStyle.background || "#0b1220",
+        background: statusStyle.background || "#111827",
         boxShadow: statusStyle.boxShadow || "none",
+        color: "#f8fafc",
+        transition: "background 180ms ease, border-color 180ms ease, box-shadow 180ms ease",
       }}
     >
       <p style={{ margin: 0, color: "#94a3b8", fontWeight: 700 }}>
-        {roundTitle}
+        {roundTitle} - {questionLabel}
       </p>
-      <h2 style={{ margin: "8px 0 20px", fontSize: 32 }}>
-        {question.title}
+      <h2
+        style={{
+          margin: "8px 0 20px",
+          color: "#f8fafc",
+          fontSize: 26,
+          fontWeight: 800,
+          lineHeight: 1.25,
+          overflowWrap: "anywhere",
+        }}
+      >
+        {questionText}
       </h2>
 
       {question.media?.type === "image" && (
@@ -5718,9 +5858,11 @@ function QuestionCard({
         disabled={disabled || savedQuestion?.locked}
         style={{
           ...inputStyle,
-          background: "#ffffff",
+          borderColor: wrongFlash ? "#f87171" : "#cbd5e1",
+          background: "#f8fafc",
           color: "#0f172a",
           opacity: disabled || savedQuestion?.locked ? 0.7 : 1,
+          boxShadow: wrongFlash ? "0 0 0 3px rgba(248, 113, 113, 0.35)" : "none",
         }}
       />
 
@@ -5732,7 +5874,21 @@ function QuestionCard({
           flexWrap: "wrap",
         }}
       >
-        <button disabled={disabled} onClick={onCheckAnswer}>
+        <button
+          disabled={disabled}
+          onClick={onCheckAnswer}
+          style={{
+            minHeight: 44,
+            padding: "10px 16px",
+            borderRadius: 12,
+            border: "1px solid #22c55e",
+            background: disabled ? "#334155" : "#22c55e",
+            color: disabled ? "#94a3b8" : "#052e16",
+            fontSize: 17,
+            fontWeight: 800,
+            cursor: disabled ? "not-allowed" : "pointer",
+          }}
+        >
           Prüfen
         </button>
       </div>
