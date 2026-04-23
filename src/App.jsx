@@ -992,13 +992,37 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+function getPrintableRoundScale(round) {
+  const textWeight = (round.questions || []).reduce(
+    (total, question) => total + String(question.prompt || "").length,
+    0,
+  );
+  const imageWeight = (round.questions || []).reduce(
+    (total, question) => total + (question.images?.length || 0) * 230,
+    0,
+  );
+  const noteWeight = (round.questions || []).reduce(
+    (total, question) => total + String(question.mediaNote || "").length * 0.5,
+    0,
+  );
+  const density = textWeight + imageWeight + noteWeight;
+
+  if (density > 1900) return 0.78;
+  if (density > 1550) return 0.84;
+  if (density > 1250) return 0.9;
+  if (density > 1000) return 0.95;
+
+  return 1;
+}
+
 function renderPrintableTeamQuizCopy(round, quizTitle, copyLabel) {
   const category = round.category || round.title;
   const roundNumber = round.id?.match(/\d+/)?.[0] || round.title.match(/\d+/)?.[0] || "";
+  const scale = getPrintableRoundScale(round);
 
   return `
     <section class="copy">
-      <div class="copy-inner">
+      <div class="copy-inner" style="--fit-scale: ${scale}; --fit-width: ${100 / scale}%;">
         <p class="copy-title">${escapeHtml(quizTitle)} - ${escapeHtml(copyLabel)}</p>
         <p class="category-line">Kategorie ${escapeHtml(roundNumber)} "${escapeHtml(category)}":</p>
         <div class="questions">
@@ -1071,8 +1095,10 @@ function createPrintableTeamQuizPdf(draft) {
           }
 
           .page {
-            position: relative;
             height: 277mm;
+            display: grid;
+            grid-template-rows: calc((277mm - 5mm) / 2) calc((277mm - 5mm) / 2);
+            gap: 5mm;
             overflow: hidden;
             break-after: page;
             break-inside: avoid;
@@ -1085,27 +1111,17 @@ function createPrintableTeamQuizPdf(draft) {
           }
 
           .copy {
-            position: absolute;
-            left: 0;
-            right: 0;
-            height: calc((277mm - 6mm) / 2);
-            padding: 5mm 9mm;
+            height: calc((277mm - 5mm) / 2);
+            padding: 5mm 8mm;
             overflow: hidden;
             break-inside: avoid;
             page-break-inside: avoid;
           }
 
-          .copy:first-child {
-            top: 0;
-          }
-
-          .copy:last-child {
-            bottom: 0;
-          }
-
           .copy-inner {
             transform-origin: top left;
-            width: 100%;
+            transform: scale(var(--fit-scale, 1));
+            width: var(--fit-width, 100%);
           }
 
           .copy-title {
@@ -1174,30 +1190,6 @@ function createPrintableTeamQuizPdf(draft) {
           )
           .join("")}
         <script>
-          function fitQuizCopies() {
-            document.querySelectorAll(".copy").forEach((copy) => {
-              const inner = copy.querySelector(".copy-inner");
-
-              if (!inner) return;
-
-              inner.style.transform = "none";
-              inner.style.width = "100%";
-
-              const availableHeight = copy.clientHeight;
-              const availableWidth = copy.clientWidth;
-              const neededHeight = inner.scrollHeight;
-              const neededWidth = inner.scrollWidth;
-              const heightScale = availableHeight / Math.max(neededHeight, 1);
-              const widthScale = availableWidth / Math.max(neededWidth, 1);
-              const scale = Math.min(1, heightScale, widthScale);
-
-              if (scale < 1) {
-                inner.style.transform = \`scale(\${scale})\`;
-                inner.style.width = \`\${100 / scale}%\`;
-              }
-            });
-          }
-
           window.addEventListener("load", async () => {
             await Promise.all(
               Array.from(document.images).map((image) =>
@@ -1206,11 +1198,9 @@ function createPrintableTeamQuizPdf(draft) {
                   : new Promise((resolve) => {
                       image.onload = resolve;
                       image.onerror = resolve;
-                    }),
+                  }),
               ),
             );
-            fitQuizCopies();
-            window.addEventListener("beforeprint", fitQuizCopies);
             window.focus();
             window.print();
           });
