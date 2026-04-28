@@ -632,7 +632,7 @@ function aggregateTeamDirectory(teams, teamProfiles = []) {
       normalizedPlayerNames: [],
       playerNames: [],
       rankingPassword: profile?.rankingPassword || "",
-      rankingOptIn: false,
+      rankingOptIn: Boolean(profile?.rankingOptIn || profile?.yearlyRankingOptIn),
       sessions: [],
       teamName: team.teamName || key,
       teamNameNormalized: key,
@@ -656,7 +656,9 @@ function aggregateTeamDirectory(teams, teamProfiles = []) {
         ].filter(Boolean)),
       ),
       rankingPassword: current.rankingPassword || profile?.rankingPassword || "",
-      rankingOptIn: current.rankingOptIn || Boolean(team.rankingOptIn),
+      rankingOptIn:
+        current.rankingOptIn ||
+        Boolean(team.rankingOptIn || profile?.rankingOptIn || profile?.yearlyRankingOptIn),
       sessions: [...current.sessions, team].sort(
         (a, b) => getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a)),
       ),
@@ -667,6 +669,22 @@ function aggregateTeamDirectory(teams, teamProfiles = []) {
   return Array.from(groupedTeams.values()).sort(
     (a, b) => b.totalPoints - a.totalPoints || a.teamName.localeCompare(b.teamName),
   );
+}
+
+function getQuestionAnswerText(team, questionId) {
+  return team?.answers?.[questionId]?.text?.trim() || "";
+}
+
+function getAnsweredQuestionCount(team, questionIds = []) {
+  return questionIds.filter((questionId) => getQuestionAnswerText(team, questionId)).length;
+}
+
+function getQuizLabelForSession(session, pubQuizzes = []) {
+  const matchingQuiz = pubQuizzes.find(
+    (quiz) => quiz.id === session?.quizId || quiz.quizCode === session?.quizCode,
+  );
+
+  return matchingQuiz?.title || session?.quizCode || session?.lobbyCode || "Pubquiz";
 }
 
 function createEmptyPubQuizQuestion(roundIndex, questionIndex) {
@@ -1388,6 +1406,7 @@ function App() {
   const [lobbyData, setLobbyData] = useState(null);
   const [registeredTeams, setRegisteredTeams] = useState([]);
   const [allTeams, setAllTeams] = useState([]);
+  const [allTeamSessions, setAllTeamSessions] = useState([]);
   const [teamProfiles, setTeamProfiles] = useState([]);
   const [managers, setManagers] = useState([]);
   const [feedbackEntries, setFeedbackEntries] = useState([]);
@@ -1549,6 +1568,24 @@ function App() {
       setAllTeams(teams);
     });
   }, [sessionData]);
+
+  useEffect(() => {
+    if (!activeManager) return undefined;
+
+    const sessionsRef = collectionGroup(db, "teamSessions");
+
+    return onSnapshot(sessionsRef, (snapshot) => {
+      const sessions = snapshot.docs
+        .map((teamDoc) => ({ id: teamDoc.id, ...teamDoc.data() }))
+        .sort((a, b) => {
+          const timeDifference =
+            getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a));
+          return timeDifference || a.teamName.localeCompare(b.teamName);
+        });
+
+      setAllTeamSessions(sessions);
+    });
+  }, [activeManager]);
 
   useEffect(() => {
     if (!activeManager && !sessionData) return undefined;
@@ -3015,6 +3052,7 @@ function App() {
       <AdminScreen
         activeManager={activeManager}
         allTeams={allTeams}
+        allTeamSessions={allTeamSessions}
         lobbyData={lobbyData}
         now={now}
         onOpenAdmin={() => setAppView("admin")}
@@ -4520,6 +4558,7 @@ function FaqScreen({
 function AdminScreen({
   activeManager,
   allTeams,
+  allTeamSessions,
   feedbackEntries,
   lobbyData,
   managers,
@@ -4567,7 +4606,7 @@ function AdminScreen({
   const canRevealAnswers = roundUnlocked && !answersRevealed;
   const tabs = [
     ["live", "Live-Steuerung"],
-    ["teams", "Teams"],
+    ["teams", "Teamarchiv"],
     ["feedback", "Meinungen"],
     ...(canManageManagers ? [["managers", "Manager"]] : []),
     ["quizzes", "Pubquizzes"],
@@ -4653,7 +4692,7 @@ function AdminScreen({
           <TeamDirectory
             pubQuizzes={pubQuizzes}
             teamProfiles={teamProfiles}
-            teams={allTeams.length ? allTeams : registeredTeams}
+            teams={allTeamSessions.length ? allTeamSessions : allTeams}
           />
         ) : personalTab === "feedback" ? (
           <FeedbackInbox entries={feedbackEntries} />
@@ -4863,7 +4902,9 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const isNarrow = useIsNarrowScreen();
-  const sortedTeams = aggregateTeamDirectory(teams, teamProfiles);
+  const sortedTeams = aggregateTeamDirectory(teams, teamProfiles).filter(
+    (team) => team.rankingOptIn || team.rankingPassword,
+  );
   const selectedTeam =
     sortedTeams.find((team) => team.id === selectedTeamId) || sortedTeams[0];
   const selectedSessions = selectedTeam?.sessions || [];
@@ -4872,6 +4913,7 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
     selectedSessions[0];
   const selectedPubQuiz = pubQuizzes.find(
     (pubQuiz) =>
+      pubQuiz.quizCode === selectedSession?.quizCode ||
       pubQuiz.quizCode === selectedSession?.lobbyCode ||
       pubQuiz.id === selectedSession?.quizId,
   );
@@ -4893,7 +4935,10 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
 
   return (
     <section style={{ marginTop: 24 }}>
-      <h2>Alle Teams</h2>
+      <h2>Teamarchiv</h2>
+      <p style={{ marginTop: 0, color: "#94a3b8" }}>
+        Alle Ranking-Teams und ihre bisherigen Pubquiz-Teilnahmen im Überblick.
+      </p>
       <div
         style={{
           display: "grid",
@@ -4935,7 +4980,7 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
                     <strong>{team.teamName}</strong>
                     <br />
                     <span style={{ color: "#94a3b8" }}>
-                      {team.sessions.length} Quiz
+                      {team.sessions.length} PQ
                       {team.sessions.length === 1 ? "" : "ze"} -{" "}
                       {team.rankingOptIn ? "Jahresranking" : "nur Tagesranking"}
                     </span>
@@ -4963,7 +5008,7 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
             </p>
             <p style={{ color: "#cbd5e1" }}>
               Punkte gesamt: <strong>{selectedTeam.totalPoints || 0}</strong> -{" "}
-              Quizze <strong>{selectedTeam.sessions.length}</strong>
+              Teilnahmen <strong>{selectedTeam.sessions.length}</strong>
             </p>
             <p style={{ color: "#cbd5e1" }}>
               Jahresranking:{" "}
@@ -4976,7 +5021,7 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
               </p>
             )}
 
-            <h4>Personen</h4>
+            <h4>Mitglieder</h4>
             <div style={{ display: "grid", gap: 8 }}>
               {Array.from(
                 new Set([
@@ -5004,7 +5049,7 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
               ))}
             </div>
 
-            <h4>Quiz auswaehlen</h4>
+            <h4>Vergangene Pubquizzes</h4>
             <div style={{ display: "grid", gap: 8 }}>
               {selectedSessions.length === 0 ? (
                 <p style={{ margin: 0, color: "#94a3b8" }}>
@@ -5038,10 +5083,11 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
                       }}
                     >
                       <span>
-                        <strong>{pubQuiz?.title || "Pubquiz"}</strong>
+                        <strong>{getQuizLabelForSession(session, pubQuizzes)}</strong>
                         <br />
                         <span style={{ color: "#94a3b8" }}>
-                          {formatCompletionDate(getCompletionValue(session))}
+                          {formatCompletionDate(getCompletionValue(session))} - Code{" "}
+                          {session.quizCode || session.lobbyCode || "?"}
                         </span>
                       </span>
                       <strong>{session.totalPoints || 0} Punkte</strong>
@@ -5053,9 +5099,77 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
 
             {selectedSession && (
               <>
+                <h4>Teilnahme-Details</h4>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: isNarrow ? "1fr" : "repeat(2, minmax(0, 1fr))",
+                    gap: 10,
+                    marginBottom: 14,
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: 12,
+                      border: "1px solid #1f2937",
+                      borderRadius: 10,
+                      background: "#020617",
+                    }}
+                  >
+                    <strong style={{ display: "block", marginBottom: 6 }}>Quiz</strong>
+                    <span style={{ color: "#cbd5e1" }}>
+                      {getQuizLabelForSession(selectedSession, pubQuizzes)}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      padding: 12,
+                      border: "1px solid #1f2937",
+                      borderRadius: 10,
+                      background: "#020617",
+                    }}
+                  >
+                    <strong style={{ display: "block", marginBottom: 6 }}>Ranking</strong>
+                    <span style={{ color: "#cbd5e1" }}>
+                      {selectedSession.rankingOptIn ? "Globales Ranking" : "Nur heute"}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      padding: 12,
+                      border: "1px solid #1f2937",
+                      borderRadius: 10,
+                      background: "#020617",
+                    }}
+                  >
+                    <strong style={{ display: "block", marginBottom: 6 }}>Punkte</strong>
+                    <span style={{ color: "#cbd5e1" }}>{selectedSession.totalPoints || 0}</span>
+                  </div>
+                  <div
+                    style={{
+                      padding: 12,
+                      border: "1px solid #1f2937",
+                      borderRadius: 10,
+                      background: "#020617",
+                    }}
+                  >
+                    <strong style={{ display: "block", marginBottom: 6 }}>Mitgespielt von</strong>
+                    <span style={{ color: "#cbd5e1" }}>
+                      {Array.from(
+                        new Set(
+                          [
+                            ...(selectedSession.playerNames || []),
+                            selectedSession.playerName,
+                          ].filter(Boolean),
+                        ),
+                      ).join(", ") || "keine Namen gespeichert"}
+                    </span>
+                  </div>
+                </div>
+
                 <h4>Antworten</h4>
                 <p style={{ color: "#94a3b8" }}>
-                  {selectedPubQuiz?.title || "Pubquiz"} -{" "}
+                  {getQuizLabelForSession(selectedSession, pubQuizzes)} -{" "}
                   {formatCompletionDate(getCompletionValue(selectedSession))}
                 </p>
                 <div style={{ display: "grid", gap: 8 }}>
@@ -5088,8 +5202,12 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
                             <strong>{answer?.text?.trim() || "nicht beantwortet"}</strong>
                           </p>
                           <p style={{ margin: 0, color: "#94a3b8" }}>
-                            {answer?.result === "correct" ? "richtig" : "offen/falsch"} -{" "}
-                            {answer?.pointsAwarded || 0} Punkte
+                            {answer?.result === "correct"
+                              ? "richtig"
+                              : answer?.result === "incorrect"
+                                ? "falsch"
+                                : "offen"}{" "}
+                            - {answer?.pointsAwarded || 0} Punkte
                           </p>
                         </article>
                       );
@@ -5292,10 +5410,14 @@ function LiveControlPanel({
   selectedRound,
   teamStatuses,
 }) {
+  const [selectedTeamId, setSelectedTeamId] = useState(null);
   const roundUnlocked = canRevealAnswers || answersRevealed;
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
   const isNarrow = useIsNarrowScreen();
+  const selectedTeam =
+    teamStatuses.find((team) => team.id === selectedTeamId) || teamStatuses[0] || null;
+  const selectedQuestionIds = selectedQuestions.map((question) => question.id);
 
   return (
     <>
@@ -5375,32 +5497,185 @@ function LiveControlPanel({
         </section>
 
         <section style={{ marginTop: 24 }}>
-          <h2>Teamstatus</h2>
-          <div style={{ display: "grid", gap: 10 }}>
-            {teamStatuses.map((team) => (
+          <h2>Heute im Quiz</h2>
+          <p style={{ marginTop: 0, color: "#94a3b8" }}>
+            Laufende Teams auswählen und ihre Antworten pro Runde direkt mitverfolgen.
+          </p>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: isNarrow
+                ? "1fr"
+                : "minmax(280px, 0.9fr) minmax(320px, 1.2fr)",
+              gap: 16,
+            }}
+          >
+            <div style={{ display: "grid", gap: 10, alignSelf: "start" }}>
+              {teamStatuses.map((team) => {
+                const answeredCount = getAnsweredQuestionCount(team, selectedQuestionIds);
+                const isSelected = selectedTeam?.id === team.id;
+
+                return (
+                  <button
+                    key={team.id}
+                    onClick={() => setSelectedTeamId(team.id)}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr auto",
+                      gap: 12,
+                      alignItems: "center",
+                      padding: 12,
+                      border: `1px solid ${isSelected ? "#38bdf8" : "#1f2937"}`,
+                      borderRadius: 12,
+                      background: isSelected ? "#082f49" : "#0b1220",
+                      color: "#e5e7eb",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <span>
+                      <strong style={{ display: "block" }}>{team.teamName}</strong>
+                      <span style={{ color: "#94a3b8", fontSize: 14 }}>
+                        {answeredCount}/{selectedQuestionIds.length} Antworten in dieser Runde
+                      </span>
+                    </span>
+                    <span
+                      style={{
+                        color: !team.started
+                          ? "#94a3b8"
+                          : team.expired
+                            ? "#86efac"
+                            : "#fde68a",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {!team.started
+                        ? "bereit"
+                        : team.expired
+                          ? "fertig"
+                          : formatDuration(team.remainingMs)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {selectedTeam && (
               <div
-                key={team.id}
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: isNarrow ? "1fr" : "1fr auto",
-                  gap: 12,
-                  alignItems: "center",
-                  padding: 12,
-                  border: "1px solid #1f2937",
-                  borderRadius: 12,
+                  padding: 16,
+                  border: "1px solid #334155",
+                  borderRadius: 14,
                   background: "#0b1220",
                 }}
               >
-                <strong>{team.teamName}</strong>
-                <span style={{ color: team.expired ? "#86efac" : "#fde68a" }}>
-                  {!team.started
-                    ? "nicht gestartet"
-                    : team.expired
-                      ? "Zeit vorbei"
-                      : formatDuration(team.remainingMs)}
-                </span>
+                <h3 style={{ marginTop: 0 }}>{selectedTeam.teamName}</h3>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: isNarrow ? "1fr" : "repeat(3, minmax(0, 1fr))",
+                    gap: 10,
+                    marginBottom: 16,
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: 12,
+                      border: "1px solid #1f2937",
+                      borderRadius: 10,
+                      background: "#020617",
+                    }}
+                  >
+                    <strong style={{ display: "block", marginBottom: 6 }}>Status</strong>
+                    <span style={{ color: "#cbd5e1" }}>
+                      {!selectedTeam.started
+                        ? "Noch nicht gestartet"
+                        : selectedTeam.expired
+                          ? "Zeit abgelaufen"
+                          : "Spielt gerade"}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      padding: 12,
+                      border: "1px solid #1f2937",
+                      borderRadius: 10,
+                      background: "#020617",
+                    }}
+                  >
+                    <strong style={{ display: "block", marginBottom: 6 }}>Zeit / Fortschritt</strong>
+                    <span style={{ color: "#cbd5e1" }}>
+                      {!selectedTeam.started
+                        ? "Nicht gestartet"
+                        : selectedTeam.expired
+                          ? "Runde fertig"
+                          : formatDuration(selectedTeam.remainingMs)}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      padding: 12,
+                      border: "1px solid #1f2937",
+                      borderRadius: 10,
+                      background: "#020617",
+                    }}
+                  >
+                    <strong style={{ display: "block", marginBottom: 6 }}>Punkte heute</strong>
+                    <span style={{ color: "#cbd5e1" }}>{selectedTeam.totalPoints || 0}</span>
+                  </div>
+                </div>
+
+                <p style={{ color: "#94a3b8" }}>
+                  Spieler:innen:{" "}
+                  {Array.from(
+                    new Set(
+                      [
+                        ...(selectedTeam.playerNames || []),
+                        selectedTeam.playerName,
+                      ].filter(Boolean),
+                    ),
+                  ).join(", ") || "keine Namen gespeichert"}
+                </p>
+
+                <h4>Antworten in {selectedRound.title}</h4>
+                <div style={{ display: "grid", gap: 8 }}>
+                  {selectedQuestions.map((question) => {
+                    const answer = selectedTeam.answers?.[question.id];
+                    const answerText = answer?.text?.trim() || "";
+
+                    return (
+                      <article
+                        key={question.id}
+                        style={{
+                          padding: 12,
+                          border: "1px solid #1f2937",
+                          borderRadius: 10,
+                          background: "#020617",
+                        }}
+                      >
+                        <p style={{ margin: "0 0 6px", color: "#93c5fd" }}>
+                          {question.title}
+                        </p>
+                        <p style={{ margin: "0 0 8px", fontWeight: 700 }}>
+                          {question.prompt || "Keine Frage gespeichert."}
+                        </p>
+                        <p style={{ margin: "0 0 6px", color: "#cbd5e1" }}>
+                          Antwort: <strong>{answerText || "noch leer"}</strong>
+                        </p>
+                        <p style={{ margin: 0, color: "#94a3b8" }}>
+                          {answer?.result === "correct"
+                            ? "richtig"
+                            : answer?.result === "incorrect"
+                              ? "falsch"
+                              : "noch offen"}{" "}
+                          - {answer?.pointsAwarded || 0} Punkte
+                        </p>
+                      </article>
+                    );
+                  })}
+                </div>
               </div>
-            ))}
+            )}
           </div>
         </section>
 
