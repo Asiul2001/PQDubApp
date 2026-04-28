@@ -162,6 +162,10 @@ function getLastQuizRound(quizRounds) {
   return quizRounds?.[quizRounds.length - 1] || defaultQuizRounds[defaultQuizRounds.length - 1];
 }
 
+function getQuestionDefaultPoints(questionIndex) {
+  return questionIndex === 5 ? 2 : 1;
+}
+
 function createManagerRecord({
   key,
   name,
@@ -672,7 +676,7 @@ function createEmptyPubQuizQuestion(roundIndex, questionIndex) {
     prompt: "",
     hint: questionIndex === 5 ? "" : "",
     answersText: "",
-    points: 1,
+    points: getQuestionDefaultPoints(questionIndex),
     images: [],
     imagesRemoved: false,
     mediaNote: questionIndex === 4 ? "Bildfrage oder Bildserie" : "",
@@ -727,6 +731,10 @@ function createPubQuizDraftFromData(data) {
             answersText: Array.isArray(savedQuestion.acceptedAnswers)
               ? savedQuestion.acceptedAnswers.join("\n")
               : savedQuestion.answersText || "",
+            points:
+              questionIndex === 5
+                ? 2
+                : Number(savedQuestion.points) || blankQuestion.points,
             images: savedQuestion.images || [],
             imagesRemoved: false,
           };
@@ -759,7 +767,10 @@ function sanitizePubQuizDraft(draft, { includeImages = true } = {}) {
           .split("\n")
           .map((answer) => answer.trim())
           .filter(Boolean),
-        points: Number(question.points) || 1,
+        points:
+          questionIndex === 5
+            ? 2
+            : Number(question.points) || getQuestionDefaultPoints(questionIndex),
         images: includeImages ? question.images || [] : [],
         mediaNote: question.mediaNote.trim(),
       })),
@@ -1015,7 +1026,10 @@ function createRuntimeQuizFromPubQuiz(pubQuiz) {
         title: question.title || `Frage ${questionIndex + 1}`,
         prompt: question.prompt || "",
         acceptedAnswers,
-        points: Number(question.points) || 1,
+        points:
+          questionIndex === 5
+            ? 2
+            : Number(question.points) || getQuestionDefaultPoints(questionIndex),
         hint: question.hint || "",
         media:
           question.images?.length > 0
@@ -2575,18 +2589,16 @@ function App() {
         return null;
       }
 
-      await setDoc(
-        quizRef,
-        {
-          ...payload,
-          id: quizId,
-          quizCode,
-          imageStorageEstimate: finalImageStorageEstimate,
-          updatedAt: serverTimestamp(),
-          createdAt: draft.id ? draft.createdAt || serverTimestamp() : serverTimestamp(),
-        },
-        { merge: true },
-      );
+      await setDoc(quizRef, {
+        ...payload,
+        id: quizId,
+        quizCode,
+        updatedAt: serverTimestamp(),
+        createdAt:
+          existingSnapshot.data()?.createdAt ||
+          draft.createdAt ||
+          serverTimestamp(),
+      });
 
       if (sessionData?.lobbyCode) {
         await setDoc(
