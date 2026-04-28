@@ -17,6 +17,7 @@ import {
   where,
 } from "firebase/firestore";
 import { checkAnswer } from "./answerChecker";
+import { jsPDF } from "jspdf";
 import QRCode from "qrcode";
 import {
   hintBudgets,
@@ -97,6 +98,10 @@ function normalizeQuizCode(code) {
   return code.replace(/[^a-z0-9]/gi, "").toUpperCase().slice(0, 6);
 }
 
+function normalizeRankingPassword(password) {
+  return password.replace(/[^a-z0-9]/gi, "").toUpperCase().slice(0, 4);
+}
+
 function getInitialQuizCode() {
   if (typeof window === "undefined") return "";
 
@@ -126,6 +131,14 @@ function createQuizCode() {
   ).join("");
 }
 
+function createRankingPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+  return Array.from({ length: 4 }, () =>
+    alphabet[Math.floor(Math.random() * alphabet.length)],
+  ).join("");
+}
+
 function getLobbyId(code) {
   return `${latestQuizId}__${code}`;
 }
@@ -140,6 +153,10 @@ function getTeamId(name) {
 
 function getTeammateId(name) {
   return normalizePersonName(name);
+}
+
+function getLastQuizRound(quizRounds) {
+  return quizRounds?.[quizRounds.length - 1] || defaultQuizRounds[defaultQuizRounds.length - 1];
 }
 
 function getEventRef(code) {
@@ -264,6 +281,10 @@ function createTeamRecord({ cleanedName, normalized, rankingOptIn }) {
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   };
+}
+
+function hasCompletedSession(session) {
+  return Boolean(getTimestampMs(session?.completedAt));
 }
 
 function isAnswerWindowClosed(lobbyData, now) {
@@ -395,6 +416,13 @@ function aggregateYearlyRanking(teams) {
         ),
       });
     });
+
+    if (
+      lobbyTeams.length === 0 ||
+      !lobbyTeams.every((team) => hasCompletedSession(team))
+    ) {
+      return;
+    }
 
     const podiumTeams = [...lobbyTeams]
       .sort(
@@ -538,17 +566,25 @@ function getDailyRankingWithTiebreakers(teams, lobbyData) {
   };
 }
 
-function aggregateTeamDirectory(teams) {
+function aggregateTeamDirectory(teams, teamProfiles = []) {
   const groupedTeams = new Map();
+  const profileMap = new Map(
+    teamProfiles.map((teamProfile) => [
+      teamProfile.teamNameNormalized || teamProfile.normalizedName || teamProfile.id,
+      teamProfile,
+    ]),
+  );
 
   teams.forEach((team) => {
     const key = team.teamNameNormalized || normalizeTeamName(team.teamName || "");
     if (!key) return;
+    const profile = profileMap.get(key);
 
     const current = groupedTeams.get(key) || {
       id: key,
       normalizedPlayerNames: [],
       playerNames: [],
+      rankingPassword: profile?.rankingPassword || "",
       rankingOptIn: false,
       sessions: [],
       teamName: team.teamName || key,
@@ -572,6 +608,7 @@ function aggregateTeamDirectory(teams) {
           team.playerName,
         ].filter(Boolean)),
       ),
+      rankingPassword: current.rankingPassword || profile?.rankingPassword || "",
       rankingOptIn: current.rankingOptIn || Boolean(team.rankingOptIn),
       sessions: [...current.sessions, team].sort(
         (a, b) => getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a)),
@@ -983,235 +1020,287 @@ function readFilesAsImages(files) {
   );
 }
 
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+function getImageFormat(src) {
+  const match = String(src || "").match(/^data:image\/([^;]+)/i);
+  const format = match?.[1]?.toUpperCase();
+
+  if (format === "JPG") return "JPEG";
+  if (format === "JPEG" || format === "PNG" || format === "WEBP") return format;
+
+  return "PNG";
 }
 
-function getPrintableRoundScale(round) {
-  const textWeight = (round.questions || []).reduce(
-    (total, question) => total + String(question.prompt || "").length,
-    0,
-  );
-  const imageWeight = (round.questions || []).reduce(
-    (total, question) => total + (question.images?.length || 0) * 230,
-    0,
-  );
-  const noteWeight = (round.questions || []).reduce(
-    (total, question) => total + String(question.mediaNote || "").length * 0.5,
-    0,
-  );
-  const density = textWeight + imageWeight + noteWeight;
+function readImageSize(src) {
+  return new Promise((resolve) => {
+    if (!src) {
+      resolve({ width: 1, height: 1 });
+      return;
+    }
 
-  if (density > 1900) return 0.78;
-  if (density > 1550) return 0.84;
-  if (density > 1250) return 0.9;
-  if (density > 1000) return 0.95;
+    const image = new Image();
 
-  return 1;
+    image.onload = () =>
+      resolve({
+        width: image.naturalWidth || image.width || 1,
+        height: image.naturalHeight || image.height || 1,
+      });
+    image.onerror = () => resolve({ width: 4, height: 3 });
+    image.src = src;
+  });
 }
 
-function renderPrintableTeamQuizCopy(round, quizTitle, copyLabel) {
+function buildImageLayouts(images, imageSizes, imageMax, contentWidth, gap) {
+  const layouts = [];
+  let cursorX = 0;
+  let cursorY = 0;
+  let rowHeight = 0;
+
+  images.forEach((image, index) => {
+    const size = imageSizes.get(image.src) || { width: 4, height: 3 };
+    const ratio = size.width / Math.max(size.height, 1);
+    let width = imageMax;
+    let height = width / Math.max(ratio, 0.1);
+
+    if (height > imageMax) {
+      height = imageMax;
+      width = height * ratio;
+    }
+
+    if (cursorX > 0 && cursorX + width > contentWidth) {
+      cursorX = 0;
+      cursorY += rowHeight + gap;
+      rowHeight = 0;
+    }
+
+    layouts.push({
+      height,
+      image,
+      width,
+      x: cursorX,
+      y: cursorY,
+    });
+
+    cursorX += width + gap;
+    rowHeight = Math.max(rowHeight, height);
+  });
+
+  return {
+    height: layouts.length ? cursorY + rowHeight : 0,
+    layouts,
+  };
+}
+
+function measurePrintableCopy(doc, round, imageSizes, scale, contentWidth) {
+  const gap = 1.2 * scale;
+  const titleSize = 6.8 * scale;
+  const categorySize = 9 * scale;
+  const questionSize = 8.2 * scale;
+  const promptSize = 8.7 * scale;
+  const noteSize = 7.2 * scale;
+  const imageMax = 50 * scale;
+  let height = titleSize * 0.42 + 1.1 * scale + categorySize * 0.42 + 2 * scale;
+
+  (round.questions || []).forEach((question, index) => {
+    const questionTitle = `Frage ${index + 1}${
+      Number(question.points) > 1 ? ` (${question.points} Punkte)` : ""
+    }:`;
+
+    doc.setFontSize(questionSize);
+    const titleLines = doc.splitTextToSize(questionTitle, contentWidth);
+    height += titleLines.length * questionSize * 0.38;
+
+    doc.setFontSize(promptSize);
+    const promptLines = doc.splitTextToSize(
+      question.prompt || "Noch keine Frage eingetragen.",
+      contentWidth,
+    );
+    height += promptLines.length * promptSize * 0.42;
+
+    if (question.mediaNote) {
+      doc.setFontSize(noteSize);
+      height += doc.splitTextToSize(`Bildnotiz: ${question.mediaNote}`, contentWidth).length *
+        noteSize *
+        0.4;
+    }
+
+    if (question.images?.length) {
+      const imageLayout = buildImageLayouts(
+        question.images,
+        imageSizes,
+        imageMax,
+        contentWidth,
+        gap,
+      );
+      height += imageLayout.height + 1.5 * scale;
+    }
+
+    height += gap;
+  });
+
+  return height;
+}
+
+function findPrintableScale(doc, round, imageSizes, contentWidth, maxHeight) {
+  const scales = [1, 0.96, 0.92, 0.88, 0.84, 0.8, 0.76, 0.72, 0.68];
+
+  return (
+    scales.find(
+      (scale) =>
+        measurePrintableCopy(doc, round, imageSizes, scale, contentWidth) <= maxHeight,
+    ) || scales[scales.length - 1]
+  );
+}
+
+function drawPrintableCopy(doc, round, quizTitle, copyLabel, x, y, width, height, imageSizes) {
+  const scale = findPrintableScale(doc, round, imageSizes, width, height);
+  const gap = 1.2 * scale;
+  const titleSize = 6.8 * scale;
+  const categorySize = 9 * scale;
+  const questionSize = 8.2 * scale;
+  const promptSize = 8.7 * scale;
+  const noteSize = 7.2 * scale;
+  const imageMax = 50 * scale;
   const category = round.category || round.title;
   const roundNumber = round.id?.match(/\d+/)?.[0] || round.title.match(/\d+/)?.[0] || "";
-  const scale = getPrintableRoundScale(round);
+  let cursorY = y;
 
-  return `
-    <section class="copy">
-      <div class="copy-inner" style="--fit-scale: ${scale}; --fit-width: ${100 / scale}%;">
-        <p class="copy-title">${escapeHtml(quizTitle)} - ${escapeHtml(copyLabel)}</p>
-        <p class="category-line">Kategorie ${escapeHtml(roundNumber)} "${escapeHtml(category)}":</p>
-        <div class="questions">
-          ${round.questions
-            .map(
-              (question, index) => `
-                <section class="question-block">
-                  <div class="question-title">Frage ${index + 1}${
-                    Number(question.points) > 1 ? ` (${escapeHtml(question.points)} Punkte)` : ""
-                  }:</div>
-                  <div class="prompt">${escapeHtml(question.prompt || "Noch keine Frage eingetragen.")}</div>
-                  ${
-                    question.mediaNote
-                      ? `<div class="note">Bildnotiz: ${escapeHtml(question.mediaNote)}</div>`
-                      : ""
-                  }
-                  ${
-                    question.images?.length
-                      ? `<div class="print-images">
-                          ${question.images
-                            .map(
-                              (image) => `
-                                <img
-                                  alt="${escapeHtml(image.alt || image.name || "Bildfrage")}"
-                                  src="${escapeHtml(image.src)}"
-                                />
-                              `,
-                            )
-                            .join("")}
-                        </div>`
-                      : ""
-                  }
-                </section>
-              `,
-            )
-            .join("")}
-        </div>
-      </div>
-    </section>
-  `;
+  doc.setTextColor(107, 114, 128);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(titleSize);
+  doc.text(`${quizTitle} - ${copyLabel}`, x, cursorY);
+  cursorY += titleSize * 0.42 + 1.1 * scale;
+
+  doc.setTextColor(17, 24, 39);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(categorySize);
+  doc.text(`Kategorie ${roundNumber} "${category}":`, x, cursorY);
+  cursorY += categorySize * 0.42 + 2 * scale;
+
+  (round.questions || []).forEach((question, index) => {
+    const questionTitle = `Frage ${index + 1}${
+      Number(question.points) > 1 ? ` (${question.points} Punkte)` : ""
+    }:`;
+
+    doc.setTextColor(17, 24, 39);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(questionSize);
+    const titleLines = doc.splitTextToSize(questionTitle, width);
+    doc.text(titleLines, x, cursorY);
+    cursorY += titleLines.length * questionSize * 0.38;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(promptSize);
+    const promptLines = doc.splitTextToSize(
+      question.prompt || "Noch keine Frage eingetragen.",
+      width,
+    );
+    doc.text(promptLines, x, cursorY);
+    cursorY += promptLines.length * promptSize * 0.42;
+
+    if (question.mediaNote) {
+      doc.setTextColor(55, 65, 81);
+      doc.setFontSize(noteSize);
+      const noteLines = doc.splitTextToSize(`Bildnotiz: ${question.mediaNote}`, width);
+      doc.text(noteLines, x, cursorY);
+      cursorY += noteLines.length * noteSize * 0.4;
+    }
+
+    if (question.images?.length) {
+      const imageLayout = buildImageLayouts(
+        question.images,
+        imageSizes,
+        imageMax,
+        width,
+        gap,
+      );
+
+      imageLayout.layouts.forEach((layout) => {
+        try {
+          doc.addImage(
+            layout.image.src,
+            getImageFormat(layout.image.src),
+            x + layout.x,
+            cursorY + 1.2 * scale + layout.y,
+            layout.width,
+            layout.height,
+          );
+        } catch (error) {
+          console.warn("PDF IMAGE ERROR:", error);
+        }
+      });
+
+      cursorY += imageLayout.height + 1.5 * scale;
+    }
+
+    cursorY += gap;
+  });
 }
 
-function createPrintableTeamQuizPdf(draft) {
+async function createPrintableTeamQuizPdf(draft) {
   const quiz = sanitizePubQuizDraft(draft);
-  const printWindow = window.open("", "_blank");
+  const pdfWindow = window.open("", "_blank");
 
-  if (!printWindow) return;
+  if (!pdfWindow) return;
 
-  const html = `
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8" />
-        <title>${escapeHtml(quiz.title)} - Druck-PDF</title>
-        <style>
-          @page {
-            size: A4;
-            margin: 10mm;
-          }
+  pdfWindow.document.write(
+    "<!doctype html><title>PDF wird erstellt</title><p style='font-family: Arial, sans-serif'>PDF wird erstellt...</p>",
+  );
 
-          * {
-            box-sizing: border-box;
-          }
+  const doc = new jsPDF({
+    format: "a4",
+    orientation: "portrait",
+    unit: "mm",
+  });
+  const imageSources = Array.from(
+    new Set(
+      quiz.rounds.flatMap((round) =>
+        round.questions.flatMap((question) =>
+          (question.images || []).map((image) => image.src).filter(Boolean),
+        ),
+      ),
+    ),
+  );
+  const imageSizeEntries = await Promise.all(
+    imageSources.map(async (src) => [src, await readImageSize(src)]),
+  );
+  const imageSizes = new Map(imageSizeEntries);
+  const pageWidth = 210;
+  const pageHeight = 297;
+  const marginX = 18;
+  const marginY = 14;
+  const gap = 8;
+  const copyWidth = pageWidth - marginX * 2;
+  const copyHeight = (pageHeight - marginY * 2 - gap) / 2;
 
-          body {
-            margin: 0;
-            color: #111827;
-            font-family: Arial, sans-serif;
-            background: #ffffff;
-          }
+  quiz.rounds.forEach((round, index) => {
+    if (index > 0) doc.addPage();
 
-          .page {
-            height: 277mm;
-            display: grid;
-            grid-template-rows: calc((277mm - 5mm) / 2) calc((277mm - 5mm) / 2);
-            gap: 5mm;
-            overflow: hidden;
-            break-after: page;
-            break-inside: avoid;
-            page-break-after: always;
-            page-break-inside: avoid;
-          }
+    drawPrintableCopy(
+      doc,
+      round,
+      quiz.title,
+      "Exemplar 1",
+      marginX,
+      marginY,
+      copyWidth,
+      copyHeight,
+      imageSizes,
+    );
+    drawPrintableCopy(
+      doc,
+      round,
+      quiz.title,
+      "Exemplar 2",
+      marginX,
+      marginY + copyHeight + gap,
+      copyWidth,
+      copyHeight,
+      imageSizes,
+    );
+  });
 
-          .page:last-child {
-            page-break-after: auto;
-          }
-
-          .copy {
-            height: calc((277mm - 5mm) / 2);
-            padding: 5mm 8mm;
-            overflow: hidden;
-            break-inside: avoid;
-            page-break-inside: avoid;
-          }
-
-          .copy-inner {
-            transform-origin: top left;
-            transform: scale(var(--fit-scale, 1));
-            width: var(--fit-width, 100%);
-          }
-
-          .copy-title {
-            margin: 0 0 1mm;
-            font-size: 6.5pt;
-            color: #6b7280;
-          }
-
-          .category-line {
-            margin: 0 0 1.5mm;
-            font-size: 8.5pt;
-            font-weight: 700;
-          }
-
-          .questions {
-            display: grid;
-            gap: 0.9mm;
-          }
-
-          .question-block {
-            break-inside: auto;
-            page-break-inside: auto;
-          }
-
-          .question-title {
-            font-weight: 700;
-            font-size: 8pt;
-          }
-
-          .prompt {
-            margin-top: 0.1mm;
-            font-size: 8.4pt;
-            line-height: 1.16;
-          }
-
-          .print-images {
-            display: flex;
-            gap: 1.3mm;
-            flex-wrap: wrap;
-            align-items: flex-start;
-            margin-top: 0.5mm;
-          }
-
-          .print-images img {
-            max-width: 50mm;
-            max-height: 50mm;
-            object-fit: contain;
-          }
-
-          .note {
-            margin-top: 0.2mm;
-            font-size: 7pt;
-            color: #374151;
-          }
-        </style>
-      </head>
-      <body>
-        ${quiz.rounds
-          .map(
-            (round) => `
-              <main class="page">
-                ${renderPrintableTeamQuizCopy(round, quiz.title, "Exemplar 1")}
-                ${renderPrintableTeamQuizCopy(round, quiz.title, "Exemplar 2")}
-              </main>
-            `,
-          )
-          .join("")}
-        <script>
-          window.addEventListener("load", async () => {
-            await Promise.all(
-              Array.from(document.images).map((image) =>
-                image.complete
-                  ? Promise.resolve()
-                  : new Promise((resolve) => {
-                      image.onload = resolve;
-                      image.onerror = resolve;
-                  }),
-              ),
-            );
-            window.focus();
-            window.print();
-          });
-        </script>
-      </body>
-    </html>
-  `;
-
-  printWindow.document.open();
-  printWindow.document.write(html);
-  printWindow.document.close();
+  const pdfUrl = doc.output("bloburl");
+  pdfWindow.location.href = pdfUrl;
 }
 
 function App() {
@@ -1230,8 +1319,11 @@ function App() {
   const [teamName, setTeamName] = useState("");
   const [playerName, setPlayerName] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [entryMode, setEntryMode] = useState("known");
+  const [knownTeamMode, setKnownTeamMode] = useState("registered");
   const [managerKey, setManagerKey] = useState("");
   const [managerPassword, setManagerPassword] = useState("");
+  const [teamPassword, setTeamPassword] = useState("");
   const [activeManager, setActiveManager] = useState(null);
   const [message, setMessage] = useState("");
   const [sessionId, setSessionId] = useState(null);
@@ -1239,6 +1331,7 @@ function App() {
   const [lobbyData, setLobbyData] = useState(null);
   const [registeredTeams, setRegisteredTeams] = useState([]);
   const [allTeams, setAllTeams] = useState([]);
+  const [teamProfiles, setTeamProfiles] = useState([]);
   const [managers, setManagers] = useState([]);
   const [feedbackEntries, setFeedbackEntries] = useState([]);
   const [answerDrafts, setAnswerDrafts] = useState({});
@@ -1248,6 +1341,7 @@ function App() {
   const [pointToast, setPointToast] = useState(null);
   const [pubQuizzes, setPubQuizzes] = useState([]);
   const [quizManagerMessage, setQuizManagerMessage] = useState("");
+  const [issuedTeamPassword, setIssuedTeamPassword] = useState(null);
 
   useEffect(() => {
     const managersRef = collection(db, "managers");
@@ -1400,6 +1494,20 @@ function App() {
   }, [sessionData]);
 
   useEffect(() => {
+    if (!activeManager && !sessionData) return undefined;
+
+    const teamsRef = collection(db, "teams");
+
+    return onSnapshot(teamsRef, (snapshot) => {
+      const nextProfiles = snapshot.docs
+        .map((teamDoc) => ({ id: teamDoc.id, ...teamDoc.data() }))
+        .sort((a, b) => (a.teamName || a.name || a.id).localeCompare(b.teamName || b.name || b.id));
+
+      setTeamProfiles(nextProfiles);
+    });
+  }, [activeManager, sessionData]);
+
+  useEffect(() => {
     if (!sessionData?.lobbyCode) return undefined;
 
     const sessionsRef = collection(
@@ -1520,6 +1628,7 @@ function App() {
     displayName,
     normalized,
     rankingOptIn,
+    rankingPassword = "",
   }) {
     const teamRef = getTeamRef(normalized);
     const sessionRef = getTeamSessionRef(cleanedCode, normalized);
@@ -1534,6 +1643,12 @@ function App() {
           teamName: cleanedName,
           yearlyRankingOptIn: rankingOptIn,
           rankingOptIn,
+          ...(rankingPassword
+            ? {
+                rankingPassword,
+                rankingPasswordCreatedAt: serverTimestamp(),
+              }
+            : {}),
           updatedAt: serverTimestamp(),
         },
         { merge: true },
@@ -1541,7 +1656,15 @@ function App() {
     } else {
       await setDoc(
         teamRef,
-        createTeamRecord({ cleanedName, normalized, rankingOptIn }),
+        {
+          ...createTeamRecord({ cleanedName, normalized, rankingOptIn }),
+          ...(rankingPassword
+            ? {
+                rankingPassword,
+                rankingPasswordCreatedAt: serverTimestamp(),
+              }
+            : {}),
+        },
         { merge: true },
       );
     }
@@ -1657,6 +1780,12 @@ function App() {
   async function handleJoin(e) {
     e.preventDefault();
     setMessage("");
+    setIssuedTeamPassword(null);
+
+    if (entryMode === "first-time") {
+      setMessage("Der Tutorial-Modus kommt bald. Bis dahin bitte 'Ich kenne mich aus' nutzen.");
+      return;
+    }
 
     if (isAdmin) {
       await handleManagerLogin();
@@ -1682,6 +1811,7 @@ function App() {
     }
 
     const displayName = playerName.trim() || "Anonym";
+    const cleanedTeamPassword = normalizeRankingPassword(teamPassword);
     const newSessionId = normalized;
     const sessionRef = getTeamSessionRef(cleanedCode, normalized);
 
@@ -1777,6 +1907,130 @@ function App() {
         ? teamProfileSnapshot.data()
         : null;
       const existing = await getDoc(sessionRef);
+      const teamProfileRankingOptIn = Boolean(
+        teamProfile?.yearlyRankingOptIn ?? teamProfile?.rankingOptIn,
+      );
+      const existingSessionRankingOptIn = Boolean(existing.data()?.rankingOptIn);
+
+      if (knownTeamMode === "registered") {
+        if (!teamProfileSnapshot.exists()) {
+          setMessage("Dieses Team ist noch nicht im Jahresranking registriert. Nutzt bitte 'nur heute'.");
+          return;
+        }
+
+        if (!teamProfileRankingOptIn) {
+          setMessage("Dieses Team hat aktuell keinen Jahresranking-Zugang. Nutzt bitte 'nur heute'.");
+          return;
+        }
+
+        let assignedPassword = "";
+        const savedPassword = normalizeRankingPassword(teamProfile?.rankingPassword || "");
+
+        if (savedPassword) {
+          if (!cleanedTeamPassword || cleanedTeamPassword !== savedPassword) {
+            setMessage("Teamname oder Team-Passwort ist falsch.");
+            return;
+          }
+        } else {
+          assignedPassword = createRankingPassword();
+          await setDoc(
+            teamProfileRef,
+            {
+              rankingPassword: assignedPassword,
+              rankingPasswordCreatedAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true },
+          );
+        }
+
+        if (existing.exists()) {
+          await setDoc(
+            sessionRef,
+            {
+              playerName: displayName,
+              ...(displayName !== "Anonym"
+                ? {
+                    playerNames: arrayUnion(displayName),
+                    normalizedPlayerNames: arrayUnion(normalizePersonName(displayName)),
+                  }
+                : {}),
+              rankingOptIn: true,
+              yearlyRankingOptInAtTime: true,
+              lastSeenAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true },
+          );
+          if (displayName !== "Anonym") {
+            const teammateId = getTeammateId(displayName);
+            if (teammateId) {
+              await setDoc(
+                getTeammateRef(normalized, teammateId),
+                {
+                  id: teammateId,
+                  name: displayName,
+                  normalizedName: teammateId,
+                  joinedEventIds: arrayUnion(getEventId(cleanedCode)),
+                  lastSeenAt: serverTimestamp(),
+                },
+                { merge: true },
+              );
+            }
+          }
+          setSessionData({
+            id: newSessionId,
+            ...existing.data(),
+            lobbyCode: cleanedCode,
+            playerName: displayName,
+            rankingOptIn: true,
+            yearlyRankingOptInAtTime: true,
+          });
+          setSessionId(newSessionId);
+          if (assignedPassword) {
+            setIssuedTeamPassword({
+              isLegacy: true,
+              password: assignedPassword,
+              teamName: teamProfile.teamName || cleanedName,
+            });
+          }
+          setMessage(`Bestehende Session beigetreten: ${existing.data().teamName}`);
+          return;
+        }
+
+        await saveTeamSession({
+          cleanedCode,
+          cleanedName,
+          displayName,
+          normalized,
+          rankingOptIn: true,
+          rankingPassword: assignedPassword,
+        });
+        setSessionData({
+          ...createSessionRecord({
+            cleanedCode,
+            cleanedName,
+            displayName,
+            normalized,
+            rankingOptIn: true,
+          }),
+        });
+        setSessionId(newSessionId);
+        if (assignedPassword) {
+          setIssuedTeamPassword({
+            isLegacy: true,
+            password: assignedPassword,
+            teamName: teamProfile.teamName || cleanedName,
+          });
+        }
+        setMessage(`Team beigetreten: ${cleanedName}`);
+        return;
+      }
+
+      if (teamProfileRankingOptIn || existingSessionRankingOptIn) {
+        setMessage("Dieses Team ist im Jahresranking registriert. Bitte 'Mein Team ist angemeldet' mit Passwort nutzen.");
+        return;
+      }
 
       if (existing.exists()) {
         const rankingOptIn =
@@ -1909,6 +2163,7 @@ function App() {
       newSessionId,
       normalized,
     } = pendingTeamCreate;
+    const rankingPassword = rankingOptIn ? createRankingPassword() : "";
 
     try {
       await saveTeamSession({
@@ -1917,6 +2172,7 @@ function App() {
         displayName,
         normalized,
         rankingOptIn,
+        rankingPassword,
       });
 
       setSessionData({
@@ -1929,11 +2185,34 @@ function App() {
         }),
       });
       setSessionId(newSessionId);
+      if (rankingPassword) {
+        setIssuedTeamPassword({
+          isLegacy: false,
+          password: rankingPassword,
+          teamName: cleanedName,
+        });
+      }
       setMessage(`Neue Session erstellt für: ${cleanedName}`);
       setPendingTeamCreate(null);
     } catch (error) {
       console.error("CREATE TEAM ERROR:", error);
       setMessage(`Fehler beim Erstellen der Session: ${error.message}`);
+    }
+  }
+
+  async function markTeamFinalReady() {
+    if (!sessionId || !sessionData?.lobbyCode) return;
+
+    const finalRound = getLastQuizRound(quizRounds);
+    if (!finalRound || !isRoundFinished(sessionData, finalRound, now)) return;
+
+    try {
+      await updateDoc(getEventRef(sessionData.lobbyCode), {
+        [`finalReady.${sessionId}`]: true,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      console.error("FINAL READY ERROR:", error);
     }
   }
 
@@ -2389,6 +2668,33 @@ function App() {
     if (!activeManager || !sessionData?.lobbyCode) return;
 
     const lobbyRef = getEventRef(sessionData.lobbyCode);
+    const finalRound = getLastQuizRound(quizRounds);
+    const allTeamsFinished =
+      registeredTeams.length > 0 &&
+      registeredTeams.every((team) => isRoundFinished(team, finalRound, now));
+    const allTeamsReady =
+      allTeamsFinished &&
+      registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
+    const eligibleTiedTeams = Array.from(
+      new Map(
+        getDailyRankingWithTiebreakers(registeredTeams, lobbyData)
+          .tieGroups.flatMap((group) => group.teams)
+          .map((team) => [team.id, team]),
+      ).values(),
+    );
+    const allEligibleReady =
+      eligibleTiedTeams.length > 0 &&
+      eligibleTiedTeams.every((team) => Boolean(lobbyData?.tiebreakerReady?.[team.id]));
+
+    if (!allTeamsReady) {
+      setQuizManagerMessage("Die Schätzfrage startet erst, wenn alle Teams nach Runde 3 bereit sind.");
+      return;
+    }
+
+    if (!allEligibleReady) {
+      setQuizManagerMessage("Die Schätzfrage startet erst, wenn alle betroffenen Teams bereit sind.");
+      return;
+    }
 
     try {
       await setDoc(
@@ -2414,7 +2720,7 @@ function App() {
 
     const lobbyRef = getEventRef(sessionData.lobbyCode);
     const dailyRanking = getDailyRankingWithTiebreakers(registeredTeams, lobbyData);
-    const finalRound = quizRounds[quizRounds.length - 1];
+    const finalRound = getLastQuizRound(quizRounds);
     const eligibleIds = new Set(
       dailyRanking.tieGroups.flatMap((group) =>
         group.teams
@@ -2426,6 +2732,12 @@ function App() {
       ...(lobbyData?.tiebreakerReady || {}),
       [sessionId]: true,
     };
+    const allTeamsFinished =
+      registeredTeams.length > 0 &&
+      registeredTeams.every((team) => isRoundFinished(team, finalRound, now));
+    const allTeamsReady =
+      allTeamsFinished &&
+      registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
     const allEligibleReady =
       eligibleIds.size > 0 &&
       Array.from(eligibleIds).every((teamId) => nextReadyTeams[teamId]);
@@ -2450,7 +2762,7 @@ function App() {
             joinedAt: serverTimestamp(),
           },
           [`tiebreakerReady.${sessionId}`]: true,
-          ...(allEligibleReady
+          ...(allTeamsReady && allEligibleReady
             ? {
                 tiebreakerStatus: "active",
                 tiebreakerStartedAt: serverTimestamp(),
@@ -2553,6 +2865,9 @@ function App() {
     return (
       <LobbyScreen
         canOpenRanking={false}
+        entryMode={entryMode}
+        issuedTeamPassword={issuedTeamPassword}
+        knownTeamMode={knownTeamMode}
         lobbyCode={lobbyCode}
         isAdmin={isAdmin}
         managerKey={managerKey}
@@ -2560,16 +2875,27 @@ function App() {
         message={message}
         onOpenRanking={() => setAppView("ranking")}
         playerName={playerName}
+        teamPassword={teamPassword}
         teamName={teamName}
         onJoin={handleJoin}
+        onCloseIssuedTeamPassword={() => setIssuedTeamPassword(null)}
         onAdminChange={(nextIsAdmin) => {
           setIsAdmin(nextIsAdmin);
           if (!nextIsAdmin) setActiveManager(null);
         }}
+        onEntryModeChange={(nextMode) => {
+          setEntryMode(nextMode);
+          const nextIsAdmin = nextMode === "manager";
+          setIsAdmin(nextIsAdmin);
+          if (!nextIsAdmin) setActiveManager(null);
+          setMessage("");
+        }}
+        onKnownTeamModeChange={setKnownTeamMode}
         onLobbyCodeChange={setLobbyCode}
         onManagerKeyChange={setManagerKey}
         onManagerPasswordChange={setManagerPassword}
         onPlayerNameChange={setPlayerName}
+        onTeamPasswordChange={(value) => setTeamPassword(normalizeRankingPassword(value))}
         onTeamNameChange={setTeamName}
         pendingTeamCreate={pendingTeamCreate}
         onCancelRankingPrompt={() => setPendingTeamCreate(null)}
@@ -2581,6 +2907,14 @@ function App() {
   const anyRoundUnlocked = quizRounds.some((round) =>
     isRoundUnlocked(lobbyData, round.id),
   );
+  const finalRound = getLastQuizRound(quizRounds);
+  const currentTeamFinishedFinalRound = isRoundFinished(sessionData, finalRound, now);
+  const allTeamsFinishedFinalRound =
+    registeredTeams.length > 0 &&
+    registeredTeams.every((team) => isRoundFinished(team, finalRound, now));
+  const allTeamsReadyForRanking =
+    allTeamsFinishedFinalRound &&
+    registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
 
   if (appView === "ranking") {
     return (
@@ -2639,6 +2973,7 @@ function App() {
         managers={managers}
         selectedRound={activeRound}
         sessionData={sessionData}
+        teamProfiles={teamProfiles}
       />
     );
   }
@@ -2667,10 +3002,13 @@ function App() {
     <QuizScreen
       activeRound={activeRound}
       answerDrafts={answerDrafts}
+      allTeamsFinishedFinalRound={allTeamsFinishedFinalRound}
+      allTeamsReadyForRanking={allTeamsReadyForRanking}
       lobbyData={lobbyData}
       now={now}
       onAnswerChange={updateAnswerDraft}
       onCheckAnswer={checkAndSaveAnswer}
+      onFinalReady={markTeamFinalReady}
       onOpenAdmin={() => setAppView("admin")}
       onOpenFaq={() => setAppView("faq")}
       onOpenMain={() => setAppView("main")}
@@ -2689,6 +3027,7 @@ function App() {
       message={message}
       sessionData={sessionData}
       sessionId={sessionId}
+      teamFinalReady={Boolean(lobbyData?.finalReady?.[sessionId])}
       tiebreakerClientId={clientId}
       tiebreakerEligible={getDailyRankingWithTiebreakers(
         registeredTeams,
@@ -2696,17 +3035,16 @@ function App() {
       ).tieGroups.some((group) =>
         group.teams.some((team) => team.id === sessionId),
       )}
-      tiebreakerFinalRoundFinished={isRoundFinished(
-        sessionData,
-        quizRounds[quizRounds.length - 1],
-        now,
-      )}
+      tiebreakerFinalRoundFinished={currentTeamFinishedFinalRound}
     />
   );
 }
 
 function LobbyScreen({
   canOpenRanking,
+  entryMode,
+  issuedTeamPassword,
+  knownTeamMode,
   isAdmin,
   lobbyCode,
   managerKey,
@@ -2714,8 +3052,12 @@ function LobbyScreen({
   message,
   onOpenRanking,
   playerName,
+  teamPassword,
   teamName,
   onAdminChange,
+  onCloseIssuedTeamPassword,
+  onEntryModeChange,
+  onKnownTeamModeChange,
   onCancelRankingPrompt,
   onConfirmRankingPrompt,
   onJoin,
@@ -2723,9 +3065,20 @@ function LobbyScreen({
   onManagerKeyChange,
   onManagerPasswordChange,
   onPlayerNameChange,
+  onTeamPasswordChange,
   onTeamNameChange,
   pendingTeamCreate,
 }) {
+  const optionCardStyle = (selected) => ({
+    padding: 16,
+    border: `1px solid ${selected ? "#38bdf8" : "#334155"}`,
+    borderRadius: 14,
+    background: selected ? "#082f49" : "#0b1220",
+    color: "#e5e7eb",
+    cursor: "pointer",
+    textAlign: "left",
+  });
+
   return (
     <main style={pageStyle}>
       <AppMenu
@@ -2747,13 +3100,84 @@ function LobbyScreen({
           PQDubApp
         </h1>
         <p style={{ color: "#94a3b8", textAlign: "center", fontSize: 18 }}>
-          {isAdmin
-            ? "Als Manager einloggen und den Quizabend vorbereiten."
-            : "Quiz-Code eingeben, Team eintragen, losquizzen."}
+          Einstieg wÃ¤hlen, Quiz-Code eingeben und dann entspannt loslegen.
         </p>
 
+        <div style={{ display: "grid", gap: 12, marginTop: 24 }}>
+          <button
+            type="button"
+            onClick={() => {
+              onEntryModeChange("manager");
+              onAdminChange(true);
+            }}
+            style={optionCardStyle(entryMode === "manager")}
+          >
+            <strong style={{ display: "block", fontSize: 20 }}>Manager access</strong>
+            <span style={{ color: "#cbd5e1" }}>
+              Login fÃ¼r Personal mit Username und Passwort.
+            </span>
+          </button>
+
+          <div
+            style={optionCardStyle(entryMode === "known")}
+            onClick={() => {
+              onEntryModeChange("known");
+              onAdminChange(false);
+            }}
+          >
+            <strong style={{ display: "block", fontSize: 20 }}>Ich kenne mich aus</strong>
+            <span style={{ color: "#cbd5e1", display: "block", marginTop: 4 }}>
+              Direkter Einstieg fÃ¼r Teams mit oder ohne Jahresranking.
+            </span>
+            <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
+              {[
+                ["registered", "Mein Team ist angemeldet", "Mit Teamname und Team-Passwort einloggen."],
+                ["guest", "Nur heute", "Tagesteam oder neues Team. Beim ersten Ranking-Opt-in wird ein Passwort erzeugt."],
+              ].map(([modeId, title, copy]) => (
+                <button
+                  key={modeId}
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEntryModeChange("known");
+                    onAdminChange(false);
+                    onKnownTeamModeChange(modeId);
+                  }}
+                  style={{
+                    padding: 12,
+                    borderRadius: 12,
+                    border: `1px solid ${knownTeamMode === modeId && entryMode === "known" ? "#22c55e" : "#334155"}`,
+                    background:
+                      knownTeamMode === modeId && entryMode === "known" ? "#052e1a" : "#020617",
+                    color: "#e5e7eb",
+                    textAlign: "left",
+                    cursor: "pointer",
+                  }}
+                >
+                  <strong style={{ display: "block" }}>{title}</strong>
+                  <span style={{ color: "#94a3b8" }}>{copy}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              onEntryModeChange("first-time");
+              onAdminChange(false);
+            }}
+            style={optionCardStyle(entryMode === "first-time")}
+          >
+            <strong style={{ display: "block", fontSize: 20 }}>Ist mein erstes Mal</strong>
+            <span style={{ color: "#cbd5e1" }}>
+              Tutorial-Modus mit Beispielen folgt noch. Bis dahin bitte erst einmal Ã¼ber "Ich kenne mich aus" starten.
+            </span>
+          </button>
+        </div>
+
         <form onSubmit={onJoin} style={{ display: "grid", gap: 14, marginTop: 24 }}>
-          {!isAdmin && (
+          {entryMode !== "first-time" && !isAdmin && (
             <>
           <label style={{ display: "grid", gap: 8, fontSize: 18 }}>
             Quiz-Code
@@ -2782,6 +3206,24 @@ function LobbyScreen({
             />
           </label>
 
+          {knownTeamMode === "registered" && (
+            <label style={{ display: "grid", gap: 8, fontSize: 18 }}>
+              Team-Passwort
+              <input
+                type="password"
+                value={teamPassword}
+                onChange={(e) => onTeamPasswordChange(e.target.value)}
+                placeholder="4-stellig alfanumerisch"
+                maxLength={4}
+                style={{
+                  ...inputStyle,
+                  letterSpacing: 4,
+                  textTransform: "uppercase",
+                }}
+              />
+            </label>
+          )}
+
           <label style={{ display: "grid", gap: 8, fontSize: 18 }}>
             Name optional
             <input
@@ -2794,22 +3236,6 @@ function LobbyScreen({
           </label>
             </>
           )}
-
-          <label
-            style={{
-              display: "flex",
-              gap: 10,
-              alignItems: "center",
-              fontSize: 16,
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={isAdmin}
-              onChange={(e) => onAdminChange(e.target.checked)}
-            />
-            Admin-Modus
-          </label>
 
           {isAdmin && (
             <div
@@ -2849,18 +3275,23 @@ function LobbyScreen({
 
           <button
             type="submit"
+            disabled={entryMode === "first-time"}
             style={{
               padding: 14,
               borderRadius: 12,
               border: "none",
-              background: "#22c55e",
-              color: "#0b1220",
+              background: entryMode === "first-time" ? "#334155" : "#22c55e",
+              color: entryMode === "first-time" ? "#94a3b8" : "#0b1220",
               fontWeight: 700,
               fontSize: 18,
-              cursor: "pointer",
+              cursor: entryMode === "first-time" ? "not-allowed" : "pointer",
             }}
           >
-            {isAdmin ? "Manager einloggen" : "Team beitreten"}
+            {isAdmin
+              ? "Manager einloggen"
+              : knownTeamMode === "registered"
+              ? "Mit Passwort einloggen"
+              : "Team beitreten"}
           </button>
         </form>
 
@@ -2882,6 +3313,15 @@ function LobbyScreen({
             teamName={pendingTeamCreate.cleanedName}
             onCancel={onCancelRankingPrompt}
             onSelect={onConfirmRankingPrompt}
+          />
+        )}
+
+        {issuedTeamPassword && (
+          <TeamPasswordModal
+            isLegacy={issuedTeamPassword.isLegacy}
+            password={issuedTeamPassword.password}
+            teamName={issuedTeamPassword.teamName}
+            onClose={onCloseIssuedTeamPassword}
           />
         )}
       </section>
@@ -2946,6 +3386,76 @@ function RankingPromptModal({ teamName, onCancel, onSelect }) {
             Ja, mitmachen
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function TeamPasswordModal({ isLegacy, password, teamName, onClose }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 12,
+        display: "grid",
+        placeItems: "center",
+        padding: 20,
+        background: "rgba(2, 6, 23, 0.82)",
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        style={{
+          width: "min(420px, 100%)",
+          padding: 24,
+          border: "1px solid #22c55e",
+          borderRadius: 16,
+          background: "#052e1a",
+          color: "#dcfce7",
+        }}
+      >
+        <h2 style={{ marginTop: 0 }}>
+          {isLegacy ? "Neues Team-Passwort" : "Team-Passwort sichern"}
+        </h2>
+        <p style={{ lineHeight: 1.5 }}>
+          {teamName} {isLegacy
+            ? "war schon im Jahresranking. Ab jetzt meldet ihr euch mit diesem Passwort an:"
+            : "ist jetzt im Jahresranking. Dieses Passwort braucht ihr ab dem nÃ¤chsten Login:"}
+        </p>
+        <div
+          style={{
+            marginTop: 14,
+            padding: "14px 16px",
+            borderRadius: 14,
+            border: "1px solid #86efac",
+            background: "#022c22",
+            color: "#f0fdf4",
+            fontSize: 30,
+            fontWeight: 800,
+            letterSpacing: 8,
+            textAlign: "center",
+          }}
+        >
+          {password}
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          style={{
+            marginTop: 18,
+            padding: "10px 14px",
+            borderRadius: 12,
+            border: "none",
+            background: "#22c55e",
+            color: "#052e1a",
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          Verstanden
+        </button>
       </div>
     </div>
   );
@@ -3123,6 +3633,9 @@ function RankingScreen({
   const yearlyTeams = aggregateYearlyRanking(allTeams || registeredTeams);
   const rankingTeams = rankingTab === "daily" ? dailyTeams : yearlyTeams;
   const hasDailyPodiumTie = dailyRanking.tieGroups.length > 0;
+  const allTeamsReadyForRanking =
+    registeredTeams.length > 0 &&
+    registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
   const hasTiebreakerAnswer = Number.isFinite(Number(lobbyData?.tiebreakerAnswer));
   const currentTeamRank =
     dailyTeams.findIndex((team) => team.id === sessionId) + 1;
@@ -3583,6 +4096,7 @@ function AdminScreen({
   registeredTeams,
   selectedRound,
   sessionData,
+  teamProfiles,
 }) {
   const [personalTab, setPersonalTab] = useState("live");
   const canManageManagers = canManageManagerRecords(activeManager, managers);
@@ -3693,6 +4207,7 @@ function AdminScreen({
         ) : personalTab === "teams" ? (
           <TeamDirectory
             pubQuizzes={pubQuizzes}
+            teamProfiles={teamProfiles}
             teams={allTeams.length ? allTeams : registeredTeams}
           />
         ) : personalTab === "feedback" ? (
@@ -3899,11 +4414,11 @@ function TiebreakerPanel({
   );
 }
 
-function TeamDirectory({ pubQuizzes, teams }) {
+function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const isNarrow = useIsNarrowScreen();
-  const sortedTeams = aggregateTeamDirectory(teams);
+  const sortedTeams = aggregateTeamDirectory(teams, teamProfiles);
   const selectedTeam =
     sortedTeams.find((team) => team.id === selectedTeamId) || sortedTeams[0];
   const selectedSessions = selectedTeam?.sessions || [];
@@ -4009,6 +4524,12 @@ function TeamDirectory({ pubQuizzes, teams }) {
               Jahresranking:{" "}
               <strong>{selectedTeam.rankingOptIn ? "Ja" : "Nein"}</strong>
             </p>
+            {selectedTeam.rankingOptIn && (
+              <p style={{ color: "#cbd5e1" }}>
+                Team-Passwort:{" "}
+                <strong>{selectedTeam.rankingPassword || "noch nicht vergeben"}</strong>
+              </p>
+            )}
 
             <h4>Personen</h4>
             <div style={{ display: "grid", gap: 8 }}>
@@ -5377,6 +5898,8 @@ function TeamList({ registeredTeams }) {
 function QuizScreen({
   activeRound,
   answerDrafts,
+  allTeamsFinishedFinalRound,
+  allTeamsReadyForRanking,
   canOpenRanking,
   lobbyData,
   message,
@@ -5384,6 +5907,7 @@ function QuizScreen({
   isAdmin,
   onAnswerChange,
   onCheckAnswer,
+  onFinalReady,
   onOpenAdmin,
   onOpenFaq,
   onOpenMain,
@@ -5399,6 +5923,7 @@ function QuizScreen({
   quizRounds,
   sessionData,
   sessionId,
+  teamFinalReady,
   tiebreakerClientId,
   tiebreakerEligible,
   tiebreakerFinalRoundFinished,
@@ -5544,7 +6069,49 @@ function QuizScreen({
         </p>
       )}
 
-      {tiebreakerEligible && tiebreakerFinalRoundFinished && (
+      {tiebreakerFinalRoundFinished && !allTeamsReadyForRanking && (
+        <section
+          style={{
+            maxWidth: 980,
+            margin: "0 auto 24px",
+            padding: 18,
+            border: "1px solid #334155",
+            borderRadius: 14,
+            background: "#111827",
+            color: "#cbd5e1",
+          }}
+        >
+          <h2 style={{ marginTop: 0 }}>Quiz fertig?</h2>
+          <p style={{ marginTop: 0 }}>
+            Markiert euer Team als bereit, sobald Runde 3 wirklich abgeschlossen ist. Die SchÃ¤tzfrage erscheint erst, wenn alle Teams fertig und bereit sind.
+          </p>
+          {!teamFinalReady && (
+            <button
+              onClick={onFinalReady}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "none",
+                background: "#22c55e",
+                color: "#0b1220",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              Bereit fÃ¼rs Ranking
+            </button>
+          )}
+          {teamFinalReady && (
+            <p style={{ marginBottom: 0, color: "#86efac" }}>
+              Euer Team ist bereit. {allTeamsFinishedFinalRound
+                ? "Sobald alle Teams bereit sind, geht es weiter."
+                : "Die anderen Teams spielen Runde 3 noch zu Ende."}
+            </p>
+          )}
+        </section>
+      )}
+
+      {tiebreakerEligible && tiebreakerFinalRoundFinished && allTeamsReadyForRanking && (
         <TiebreakerTeamPanel
           lobbyData={lobbyData}
           clientId={tiebreakerClientId}

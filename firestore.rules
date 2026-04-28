@@ -26,6 +26,7 @@ service cloud.firestore {
         "tiebreakerStartedAt",
         "tiebreakerStatus",
         "tiebreakerSubmissions",
+        "finalReady",
         "unlockedRounds",
         "createdAt",
         "updatedAt"
@@ -43,6 +44,7 @@ service cloud.firestore {
       && (!("tiebreakerEstimates" in request.resource.data) || request.resource.data.tiebreakerEstimates is map)
       && (!("tiebreakerParticipants" in request.resource.data) || request.resource.data.tiebreakerParticipants is map)
       && (!("tiebreakerReady" in request.resource.data) || request.resource.data.tiebreakerReady is map)
+      && (!("finalReady" in request.resource.data) || request.resource.data.finalReady is map)
       && (!("tiebreakerStatus" in request.resource.data) || request.resource.data.tiebreakerStatus is string)
       && (!("tiebreakerSubmissions" in request.resource.data) || request.resource.data.tiebreakerSubmissions is map);
     }
@@ -103,6 +105,8 @@ service cloud.firestore {
         "playerNames",
         "normalizedPlayerNames",
         "anonymousJoinCount",
+        "rankingPassword",
+        "rankingPasswordCreatedAt",
         "gamesPlayed",
         "totalDailyPoints",
         "totalGlobalPoints",
@@ -115,7 +119,8 @@ service cloud.firestore {
       && request.resource.data.name is string
       && request.resource.data.normalizedName is string
       && request.resource.data.yearlyRankingOptIn is bool
-      && request.resource.data.rankingOptIn is bool;
+      && request.resource.data.rankingOptIn is bool
+      && (!("rankingPassword" in request.resource.data) || request.resource.data.rankingPassword is string);
     }
 
     match /settings/{settingId} {
