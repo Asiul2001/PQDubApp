@@ -162,6 +162,26 @@ function getLastQuizRound(quizRounds) {
   return quizRounds?.[quizRounds.length - 1] || defaultQuizRounds[defaultQuizRounds.length - 1];
 }
 
+function createManagerRecord({
+  key,
+  name,
+  password,
+  active = true,
+  createdAt,
+  headManager = false,
+}) {
+  return {
+    key,
+    name: name || key,
+    password,
+    active,
+    headManager,
+    createdAt: createdAt || serverTimestamp(),
+    lastLoginAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+}
+
 function getEventRef(code) {
   return doc(db, "quizEvents", getEventId(code));
 }
@@ -1757,11 +1777,13 @@ function App() {
           headManager: true,
         };
 
-        await setDoc(managerRef, {
-          ...validatedManager,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        await setDoc(
+          managerRef,
+          createManagerRecord({
+            ...validatedManager,
+            createdAt: serverTimestamp(),
+          }),
+        );
       } else {
         const managerData = managerSnapshot.data();
 
@@ -1775,10 +1797,17 @@ function App() {
           ...managerData,
         };
 
-        await updateDoc(managerRef, {
-          lastLoginAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+        await setDoc(
+          managerRef,
+          createManagerRecord({
+            active: managerData.active !== false,
+            createdAt: managerData.createdAt,
+            headManager: Boolean(managerData.headManager),
+            key: cleanedManagerKey,
+            name: managerData.name || managerSnapshot.id,
+            password: managerData.password,
+          }),
+        );
       }
 
       setActiveManager(validatedManager);
