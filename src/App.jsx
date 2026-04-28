@@ -28,22 +28,25 @@ import {
 
 const pageStyle = {
   minHeight: "100vh",
-  background: "#0f172a",
+  background:
+    "radial-gradient(circle at top, rgba(34,197,94,0.12), transparent 24%), linear-gradient(180deg, #081120 0%, #0f172a 42%, #111827 100%)",
   color: "#e5e7eb",
-  fontFamily: "Arial, sans-serif",
-  padding: "80px 24px 24px",
+  fontFamily: '"Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif',
+  padding: "80px 20px 24px",
   boxSizing: "border-box",
 };
 
 const inputStyle = {
   width: "100%",
   padding: 14,
-  borderRadius: 12,
-  border: "1px solid #334155",
-  background: "#020617",
-  color: "#e5e7eb",
+  borderRadius: 16,
+  border: "1px solid rgba(148, 163, 184, 0.24)",
+  background: "rgba(8, 15, 30, 0.92)",
+  color: "#f8fafc",
   fontSize: 18,
   boxSizing: "border-box",
+  outline: "none",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
 };
 
 const pointMessages = [
@@ -209,6 +212,26 @@ function getTimestampMs(value) {
     return Number.isNaN(parsed) ? 0 : parsed;
   }
   return 0;
+}
+
+function repairMojibake(value) {
+  if (typeof value !== "string") return value;
+
+  return value
+    .replace(/ÃƒÂ¤/g, "ä")
+    .replace(/ÃƒÂ¶/g, "ö")
+    .replace(/ÃƒÂ¼/g, "ü")
+    .replace(/ÃƒÂ„/g, "Ä")
+    .replace(/ÃƒÂ–/g, "Ö")
+    .replace(/ÃƒÂœ/g, "Ü")
+    .replace(/ÃƒÂŸ/g, "ß")
+    .replace(/Ã¤/g, "ä")
+    .replace(/Ã¶/g, "ö")
+    .replace(/Ã¼/g, "ü")
+    .replace(/Ã„/g, "Ä")
+    .replace(/Ã–/g, "Ö")
+    .replace(/Ãœ/g, "Ü")
+    .replace(/ÃŸ/g, "ß");
 }
 
 const weekdayLabels = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
@@ -1319,7 +1342,7 @@ function App() {
   const [teamName, setTeamName] = useState("");
   const [playerName, setPlayerName] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
-  const [entryMode, setEntryMode] = useState("known");
+  const [entryMode, setEntryMode] = useState("picker");
   const [knownTeamMode, setKnownTeamMode] = useState("registered");
   const [managerKey, setManagerKey] = useState("");
   const [managerPassword, setManagerPassword] = useState("");
@@ -2863,7 +2886,7 @@ function App() {
 
   if (!sessionData) {
     return (
-      <LobbyScreen
+      <MobileLobbyScreen
         canOpenRanking={false}
         entryMode={entryMode}
         issuedTeamPassword={issuedTeamPassword}
@@ -3329,6 +3352,385 @@ function LobbyScreen({
   );
 }
 
+function MobileLobbyScreen({
+  canOpenRanking,
+  entryMode,
+  issuedTeamPassword,
+  knownTeamMode,
+  isAdmin,
+  lobbyCode,
+  managerKey,
+  managerPassword,
+  message,
+  onOpenRanking,
+  playerName,
+  teamPassword,
+  teamName,
+  onAdminChange,
+  onCloseIssuedTeamPassword,
+  onEntryModeChange,
+  onKnownTeamModeChange,
+  onCancelRankingPrompt,
+  onConfirmRankingPrompt,
+  onJoin,
+  onLobbyCodeChange,
+  onManagerKeyChange,
+  onManagerPasswordChange,
+  onPlayerNameChange,
+  onTeamPasswordChange,
+  onTeamNameChange,
+  pendingTeamCreate,
+}) {
+  const cardStyle = (accent) => ({
+    padding: 18,
+    borderRadius: 22,
+    border: `1px solid ${accent}`,
+    background: "rgba(8, 15, 30, 0.78)",
+    color: "#f8fafc",
+    textAlign: "left",
+    cursor: "pointer",
+  });
+  const screenStyle = {
+    width: "min(100%, 460px)",
+    margin: "0 auto",
+    padding: 24,
+    borderRadius: 28,
+    border: "1px solid rgba(148, 163, 184, 0.18)",
+    background:
+      "linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(17, 24, 39, 0.98))",
+    boxShadow: "0 30px 80px rgba(2, 6, 23, 0.42)",
+  };
+  const secondaryButtonStyle = {
+    minHeight: 46,
+    padding: "12px 14px",
+    borderRadius: 16,
+    border: "1px solid rgba(148, 163, 184, 0.2)",
+    background: "rgba(8, 15, 30, 0.7)",
+    color: "#cbd5e1",
+    fontWeight: 700,
+    cursor: "pointer",
+  };
+  const primaryButtonStyle = {
+    width: "100%",
+    minHeight: 56,
+    padding: "14px 18px",
+    borderRadius: 18,
+    border: "none",
+    background: "linear-gradient(135deg, #22c55e, #14b8a6)",
+    color: "#04111f",
+    fontWeight: 800,
+    fontSize: 18,
+    cursor: "pointer",
+  };
+  const titleStyle = {
+    margin: 0,
+    fontSize: 48,
+    lineHeight: 0.96,
+    letterSpacing: "-0.045em",
+    textAlign: "left",
+  };
+  const selectedKnownCopy =
+    knownTeamMode === "registered"
+      ? {
+          eyebrow: "Jahresranking",
+          title: "Mein Team ist angemeldet",
+          description:
+            "Mit Teamname und 4-stelligem Passwort einloggen. Schnell, klar und ohne unnötige Extras.",
+          submitLabel: "Mit Passwort einloggen",
+        }
+      : {
+          eyebrow: "Tagesmodus",
+          title: "Nur heute",
+          description:
+            "Für Teams ohne Jahresranking oder für neue Teams. Wenn ihr später mitmacht, wird euer Team-Passwort automatisch erstellt.",
+          submitLabel: "Als Team starten",
+        };
+  const showPicker = entryMode === "picker";
+
+  return (
+    <main style={pageStyle}>
+      <AppMenu
+        canOpenRanking={canOpenRanking}
+        isAdmin={isAdmin}
+        onOpenRanking={onOpenRanking}
+      />
+
+      <section style={{ width: "100%", maxWidth: 520, margin: "0 auto" }}>
+        <div style={{ marginBottom: 18, padding: "0 6px", textAlign: "left" }}>
+          <p
+            style={{
+              marginBottom: 10,
+              color: "#86efac",
+              fontSize: 13,
+              fontWeight: 700,
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+            }}
+          >
+            Dublin Pub Quiz
+          </p>
+          <h1 style={titleStyle}>PQDubApp</h1>
+          <p style={{ marginTop: 10, color: "#cbd5e1", fontSize: 18, lineHeight: 1.45 }}>
+            Ruhiger Start, klare Schritte und genug Platz für Handybildschirme.
+          </p>
+        </div>
+
+        <section style={screenStyle}>
+          {showPicker ? (
+            <>
+              <p style={{ margin: 0, color: "#93c5fd", fontWeight: 700 }}>Start</p>
+              <h2 style={{ marginTop: 8, fontSize: 30 }}>Wie möchtet ihr starten?</h2>
+              <p style={{ color: "#94a3b8", lineHeight: 1.5 }}>
+                Jede Option öffnet danach einen eigenen, einfachen Bildschirm.
+              </p>
+
+              <div style={{ display: "grid", gap: 14, marginTop: 22 }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onEntryModeChange("known");
+                    onAdminChange(false);
+                    onKnownTeamModeChange("registered");
+                  }}
+                  style={cardStyle("rgba(56, 189, 248, 0.28)")}
+                >
+                  <span style={{ display: "block", color: "#7dd3fc", fontSize: 12, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                    Teams
+                  </span>
+                  <strong style={{ display: "block", marginTop: 8, fontSize: 24 }}>
+                    Ich kenne mich aus
+                  </strong>
+                  <span style={{ display: "block", marginTop: 8, color: "#cbd5e1", lineHeight: 1.45 }}>
+                    {repairMojibake(
+                      "Für Teams mit Jahresranking oder Teams, die nur heute mitmachen.",
+                    )}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    onEntryModeChange("manager");
+                    onAdminChange(true);
+                  }}
+                  style={cardStyle("rgba(245, 158, 11, 0.28)")}
+                >
+                  <span style={{ display: "block", color: "#fcd34d", fontSize: 12, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                    Personal
+                  </span>
+                  <strong style={{ display: "block", marginTop: 8, fontSize: 24 }}>
+                    Manager access
+                  </strong>
+                  <span style={{ display: "block", marginTop: 8, color: "#cbd5e1", lineHeight: 1.45 }}>
+                    {repairMojibake("Login für Personal mit Username und Passwort.")}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    onEntryModeChange("first-time");
+                    onAdminChange(false);
+                  }}
+                  style={cardStyle("rgba(167, 139, 250, 0.28)")}
+                >
+                  <span style={{ display: "block", color: "#c4b5fd", fontSize: 12, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+                    Neu dabei
+                  </span>
+                  <strong style={{ display: "block", marginTop: 8, fontSize: 24 }}>
+                    Ist mein erstes Mal
+                  </strong>
+                  <span style={{ display: "block", marginTop: 8, color: "#cbd5e1", lineHeight: 1.45 }}>
+                    {repairMojibake(
+                      "Ein Tutorial-Modus kommt noch. Später mit Beispielen und kurzer Einführung.",
+                    )}
+                  </span>
+                </button>
+              </div>
+            </>
+          ) : entryMode === "manager" ? (
+            <>
+              <button type="button" onClick={() => onEntryModeChange("picker")} style={secondaryButtonStyle}>
+                Zurück
+              </button>
+              <p style={{ margin: "18px 0 0", color: "#fcd34d", fontWeight: 700 }}>Personal</p>
+              <h2 style={{ marginTop: 8, fontSize: 30 }}>Manager access</h2>
+              <p style={{ color: "#94a3b8", lineHeight: 1.5 }}>
+                {repairMojibake("Nur die beiden Felder, die das Personal wirklich braucht.")}
+              </p>
+              <form onSubmit={onJoin} style={{ display: "grid", gap: 14, marginTop: 22 }}>
+                <label style={{ display: "grid", gap: 8, fontSize: 15, color: "#cbd5e1" }}>
+                  Username
+                  <input
+                    type="text"
+                    value={managerKey}
+                    onChange={(e) => onManagerKeyChange(normalizeManagerKey(e.target.value))}
+                    placeholder="z. B. lea"
+                    style={inputStyle}
+                  />
+                </label>
+                <label style={{ display: "grid", gap: 8, fontSize: 15, color: "#cbd5e1" }}>
+                  {repairMojibake("Persönliches Passwort")}
+                  <input
+                    type="password"
+                    value={managerPassword}
+                    onChange={(e) => onManagerPasswordChange(e.target.value)}
+                    placeholder="Manager-Passwort"
+                    style={inputStyle}
+                  />
+                </label>
+                <button type="submit" style={primaryButtonStyle}>
+                  Manager einloggen
+                </button>
+              </form>
+            </>
+          ) : entryMode === "first-time" ? (
+            <>
+              <button type="button" onClick={() => onEntryModeChange("picker")} style={secondaryButtonStyle}>
+                Zurück
+              </button>
+              <p style={{ margin: "18px 0 0", color: "#c4b5fd", fontWeight: 700 }}>Bald verfügbar</p>
+              <h2 style={{ marginTop: 8, fontSize: 30 }}>Tutorial-Modus</h2>
+              <p style={{ color: "#cbd5e1", lineHeight: 1.6 }}>
+                {repairMojibake(
+                  "Hier soll später ein richtiger Einsteiger-Modus hin: mit Beispielen, Erklärungen und einer kurzen Führung durch den Quizabend.",
+                )}
+              </p>
+              <div
+                style={{
+                  marginTop: 20,
+                  padding: 18,
+                  borderRadius: 20,
+                  background: "rgba(76, 29, 149, 0.24)",
+                  border: "1px solid rgba(196, 181, 253, 0.3)",
+                  color: "#ddd6fe",
+                }}
+              >
+                {repairMojibake("Bis dahin startet ihr am besten über ")}
+                <strong>Ich kenne mich aus</strong>.
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+                <button type="button" onClick={() => onEntryModeChange("picker")} style={secondaryButtonStyle}>
+                  Zurück
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onKnownTeamModeChange(knownTeamMode === "registered" ? "guest" : "registered")
+                  }
+                  style={secondaryButtonStyle}
+                >
+                  {knownTeamMode === "registered" ? "Zu Nur heute" : "Zu Mein Team ist angemeldet"}
+                </button>
+              </div>
+
+              <p style={{ margin: 0, color: "#7dd3fc", fontWeight: 700 }}>
+                {selectedKnownCopy.eyebrow}
+              </p>
+              <h2 style={{ marginTop: 8, fontSize: 30 }}>
+                {repairMojibake(selectedKnownCopy.title)}
+              </h2>
+              <p style={{ color: "#94a3b8", lineHeight: 1.55 }}>
+                {repairMojibake(selectedKnownCopy.description)}
+              </p>
+
+              <form onSubmit={onJoin} style={{ display: "grid", gap: 14, marginTop: 22 }}>
+                <label style={{ display: "grid", gap: 8, fontSize: 15, color: "#cbd5e1" }}>
+                  Quiz-Code
+                  <input
+                    type="text"
+                    value={lobbyCode}
+                    onChange={(e) => onLobbyCodeChange(normalizeQuizCode(e.target.value))}
+                    placeholder="ABC123"
+                    maxLength={6}
+                    style={{ ...inputStyle, letterSpacing: 2, textTransform: "uppercase" }}
+                  />
+                </label>
+
+                <label style={{ display: "grid", gap: 8, fontSize: 15, color: "#cbd5e1" }}>
+                  Teamname
+                  <input
+                    type="text"
+                    value={teamName}
+                    onChange={(e) => onTeamNameChange(e.target.value)}
+                    placeholder="z. B. Veggie Hack"
+                    style={inputStyle}
+                  />
+                </label>
+
+                {knownTeamMode === "registered" && (
+                  <label style={{ display: "grid", gap: 8, fontSize: 15, color: "#cbd5e1" }}>
+                    {repairMojibake("Team-Passwort")}
+                    <input
+                      type="password"
+                      value={teamPassword}
+                      onChange={(e) => onTeamPasswordChange(e.target.value)}
+                      placeholder="4-stellig alfanumerisch"
+                      maxLength={4}
+                      style={{ ...inputStyle, letterSpacing: 4, textTransform: "uppercase" }}
+                    />
+                  </label>
+                )}
+
+                <label style={{ display: "grid", gap: 8, fontSize: 15, color: "#cbd5e1" }}>
+                  Dein Name
+                  <input
+                    type="text"
+                    value={playerName}
+                    onChange={(e) => onPlayerNameChange(e.target.value)}
+                    placeholder="Optional, sonst anonym"
+                    style={inputStyle}
+                  />
+                </label>
+
+                <button type="submit" style={primaryButtonStyle}>
+                  {repairMojibake(selectedKnownCopy.submitLabel)}
+                </button>
+              </form>
+            </>
+          )}
+
+          {message && (
+            <div
+              style={{
+                marginTop: 18,
+                padding: 14,
+                borderRadius: 16,
+                border: "1px solid rgba(125, 211, 252, 0.28)",
+                background: "rgba(8, 47, 73, 0.42)",
+                color: "#dbeafe",
+                lineHeight: 1.5,
+              }}
+            >
+              {repairMojibake(message)}
+            </div>
+          )}
+        </section>
+
+        {pendingTeamCreate && (
+          <RankingPromptModal
+            teamName={pendingTeamCreate.cleanedName}
+            onCancel={onCancelRankingPrompt}
+            onSelect={onConfirmRankingPrompt}
+          />
+        )}
+
+        {issuedTeamPassword && (
+          <TeamPasswordModal
+            isLegacy={issuedTeamPassword.isLegacy}
+            password={issuedTeamPassword.password}
+            teamName={issuedTeamPassword.teamName}
+            onClose={onCloseIssuedTeamPassword}
+          />
+        )}
+      </section>
+    </main>
+  );
+}
+
 function RankingPromptModal({ teamName, onCancel, onSelect }) {
   return (
     <div
@@ -3422,7 +3824,7 @@ function TeamPasswordModal({ isLegacy, password, teamName, onClose }) {
         <p style={{ lineHeight: 1.5 }}>
           {teamName} {isLegacy
             ? "war schon im Jahresranking. Ab jetzt meldet ihr euch mit diesem Passwort an:"
-            : "ist jetzt im Jahresranking. Dieses Passwort braucht ihr ab dem nÃ¤chsten Login:"}
+            : "ist jetzt im Jahresranking. Dieses Passwort braucht ihr ab dem nächsten Login:"}
         </p>
         <div
           style={{
@@ -3938,9 +4340,11 @@ function FaqScreen({
               }}
             >
               <summary style={{ cursor: "pointer", fontWeight: 700 }}>
-                {question}
+                {repairMojibake(question)}
               </summary>
-              <p style={{ color: "#cbd5e1", lineHeight: 1.5 }}>{answer}</p>
+              <p style={{ color: "#cbd5e1", lineHeight: 1.5 }}>
+                {repairMojibake(answer)}
+              </p>
             </details>
           ))}
         </div>
@@ -6015,7 +6419,7 @@ function QuizScreen({
                 fontWeight: 700,
               }}
             >
-              {pointToast.message}
+              {repairMojibake(pointToast.message)}
             </p>
           )}
           <p style={{ margin: "8px 0 0", color: "#cbd5e1" }}>
@@ -6083,7 +6487,9 @@ function QuizScreen({
         >
           <h2 style={{ marginTop: 0 }}>Quiz fertig?</h2>
           <p style={{ marginTop: 0 }}>
-            Markiert euer Team als bereit, sobald Runde 3 wirklich abgeschlossen ist. Die SchÃ¤tzfrage erscheint erst, wenn alle Teams fertig und bereit sind.
+            {repairMojibake(
+              "Markiert euer Team als bereit, sobald Runde 3 wirklich abgeschlossen ist. Die Schätzfrage erscheint erst, wenn alle Teams fertig und bereit sind.",
+            )}
           </p>
           {!teamFinalReady && (
             <button
@@ -6098,7 +6504,7 @@ function QuizScreen({
                 cursor: "pointer",
               }}
             >
-              Bereit fÃ¼rs Ranking
+              {repairMojibake("Bereit fürs Ranking")}
             </button>
           )}
           {teamFinalReady && (
