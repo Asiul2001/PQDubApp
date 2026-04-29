@@ -4253,6 +4253,9 @@ function RankingScreen({
   const yearlyTeams = aggregateYearlyRanking(allTeams || registeredTeams);
   const rankingTeams = rankingTab === "daily" ? dailyTeams : yearlyTeams;
   const hasDailyPodiumTie = dailyRanking.tieGroups.length > 0;
+  const currentTeamIsTiebreakerEligible = dailyRanking.tieGroups.some((group) =>
+    group.teams.some((team) => team.id === sessionId),
+  );
   const allTeamsReadyForRanking =
     registeredTeams.length > 0 &&
     registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
@@ -4365,7 +4368,7 @@ function RankingScreen({
           </p>
         ) : (
           <div style={{ display: "grid", gap: 10 }}>
-            {rankingTab === "daily" && hasDailyPodiumTie && (
+            {rankingTab === "daily" && hasDailyPodiumTie && currentTeamIsTiebreakerEligible && (
               <div
                 style={{
                   padding: 14,
@@ -6999,6 +7002,11 @@ function QuizScreen({
               "Markiert euer Team als bereit, sobald Runde 3 wirklich abgeschlossen ist. Die Schätzfrage erscheint erst, wenn alle Teams fertig und bereit sind.",
             )}
           </p>
+          {!tiebreakerEligible && (
+            <p style={{ marginTop: 0, color: "#94a3b8" }}>
+              Euer Team nimmt nicht an der Schätzfrage teil.
+            </p>
+          )}
           {!teamFinalReady && (
             <button
               onClick={onFinalReady}
