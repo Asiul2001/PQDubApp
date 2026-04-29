@@ -5720,6 +5720,7 @@ function TeamDirectory({
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const [selectedTeamVoucherDocs, setSelectedTeamVoucherDocs] = useState([]);
+  const [selectedAnswerRoundId, setSelectedAnswerRoundId] = useState(null);
   const [teamSearch, setTeamSearch] = useState("");
   const [voucherMessage, setVoucherMessage] = useState("");
   const isNarrow = useIsNarrowScreen();
@@ -5791,8 +5792,9 @@ function TeamDirectory({
       pubQuiz.id === selectedSession?.quizId,
   );
   const selectedQuiz = createRuntimeQuizFromPubQuiz(selectedPubQuiz);
-  const selectedQuizQuestions = selectedQuiz.quizRounds.flatMap((round) =>
-    round.questionIds
+  const selectedQuizQuestionsByRound = selectedQuiz.quizRounds.map((round) => ({
+    ...round,
+    questions: round.questionIds
       .map((questionId) => {
         const question = selectedQuiz.questions[questionId];
 
@@ -5800,11 +5802,17 @@ function TeamDirectory({
 
         return {
           ...question,
+          roundId: round.id,
           roundTitle: round.title,
         };
       })
       .filter(Boolean),
-  );
+  }));
+  const selectedQuestionRound =
+    selectedQuizQuestionsByRound.find((round) => round.id === selectedAnswerRoundId) ||
+    selectedQuizQuestionsByRound[0] ||
+    null;
+  const selectedQuizQuestions = selectedQuestionRound?.questions || [];
 
   useEffect(() => {
     if (!visibleTeams.some((team) => team.id === selectedTeamId)) {
@@ -5812,6 +5820,10 @@ function TeamDirectory({
       setSelectedSessionId(null);
     }
   }, [selectedTeamId, visibleTeams]);
+
+  useEffect(() => {
+    setSelectedAnswerRoundId(selectedQuizQuestionsByRound[0]?.id || null);
+  }, [selectedSession?.id, selectedPubQuiz?.id]);
 
   useEffect(() => {
     if (!selectedTeam?.id) {
@@ -6119,6 +6131,19 @@ function TeamDirectory({
                       background: "#020617",
                     }}
                   >
+                    <strong style={{ display: "block", marginBottom: 6 }}>Tagesplatz</strong>
+                    <span style={{ color: "#cbd5e1" }}>
+                      {selectedSession.rankDaily ? `${selectedSession.rankDaily}. Platz` : "nicht gespeichert"}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      padding: 12,
+                      border: "1px solid #1f2937",
+                      borderRadius: 10,
+                      background: "#020617",
+                    }}
+                  >
                     <strong style={{ display: "block", marginBottom: 6 }}>Mitgespielt von</strong>
                     <span style={{ color: "#cbd5e1" }}>
                       {Array.from(
@@ -6133,15 +6158,92 @@ function TeamDirectory({
                   </div>
                 </div>
 
+                {(selectedPubQuiz?.tiebreakerQuestion ||
+                  Number.isFinite(Number(selectedPubQuiz?.tiebreakerAnswer))) && (
+                  <section
+                    style={{
+                      marginBottom: 16,
+                      padding: 14,
+                      border: "1px solid #334155",
+                      borderRadius: 12,
+                      background: "#08111d",
+                    }}
+                  >
+                    <strong style={{ display: "block", color: "#93c5fd", marginBottom: 8 }}>
+                      Schätzfrage
+                    </strong>
+                    {selectedPubQuiz?.tiebreakerQuestion && (
+                      <p style={{ margin: "0 0 8px", color: "#e5e7eb", fontWeight: 700 }}>
+                        {selectedPubQuiz.tiebreakerQuestion}
+                      </p>
+                    )}
+                    <p style={{ margin: "0 0 6px", color: "#cbd5e1" }}>
+                      Team-Antwort:{" "}
+                      <strong>
+                        {selectedSession.tiebreaker?.estimate ??
+                          selectedSession.tiebreakerEstimate ??
+                          selectedSession.tiebreakerGuess ??
+                          "nicht gespeichert"}
+                      </strong>
+                    </p>
+                    <p style={{ margin: 0, color: "#94a3b8" }}>
+                      Richtige Antwort:{" "}
+                      <strong style={{ color: "#e5e7eb" }}>
+                        {Number.isFinite(Number(selectedPubQuiz?.tiebreakerAnswer))
+                          ? selectedPubQuiz.tiebreakerAnswer
+                          : "noch nicht gespeichert"}
+                      </strong>
+                    </p>
+                  </section>
+                )}
+
                 <h4>Antworten</h4>
                 <p style={{ color: "#94a3b8" }}>
                   {getQuizLabelForSession(selectedSession, pubQuizzes)} -{" "}
                   {formatCompletionDate(getCompletionValue(selectedSession))}
                 </p>
+                {selectedQuizQuestionsByRound.length > 0 && (
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                    {selectedQuizQuestionsByRound.map((round) => {
+                      const isSelected = selectedQuestionRound?.id === round.id;
+
+                      return (
+                        <button
+                          key={round.id}
+                          onClick={() => setSelectedAnswerRoundId(round.id)}
+                          style={{
+                            padding: "10px 14px",
+                            borderRadius: 999,
+                            border: `1px solid ${isSelected ? "#38bdf8" : "#334155"}`,
+                            background: isSelected ? "#082f49" : "#020617",
+                            color: isSelected ? "#e0f2fe" : "#cbd5e1",
+                            fontWeight: 700,
+                          }}
+                        >
+                          {round.title}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
                 <div style={{ display: "grid", gap: 8 }}>
+                  {selectedQuestionRound && (
+                    <div
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: 10,
+                        background: "#101827",
+                        border: "1px solid #1f2937",
+                        color: "#93c5fd",
+                        fontWeight: 700,
+                      }}
+                    >
+                      {selectedQuestionRound.title}
+                    </div>
+                  )}
                   {selectedQuizQuestions.length === 0 ? (
                     <p style={{ margin: 0, color: "#94a3b8" }}>
-                      Fuer dieses Quiz sind keine Fragen gespeichert.
+                      Fuer diese Runde sind keine Fragen gespeichert.
                     </p>
                   ) : (
                     selectedQuizQuestions.map((question) => {
@@ -6158,7 +6260,7 @@ function TeamDirectory({
                           }}
                         >
                           <p style={{ margin: "0 0 6px", color: "#93c5fd" }}>
-                            {question.roundTitle} - {question.title}
+                            {question.title}
                           </p>
                           <p style={{ margin: "0 0 8px", fontWeight: 700 }}>
                             {question.prompt || "Keine Frage gespeichert."}
