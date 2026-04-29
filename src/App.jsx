@@ -1547,6 +1547,7 @@ function App() {
   const [allTeams, setAllTeams] = useState([]);
   const [allTeamSessions, setAllTeamSessions] = useState([]);
   const [teamHistorySessions, setTeamHistorySessions] = useState([]);
+  const [allVoucherDocs, setAllVoucherDocs] = useState([]);
   const [globalRankingRows, setGlobalRankingRows] = useState([]);
   const [teamProfiles, setTeamProfiles] = useState([]);
   const [managers, setManagers] = useState([]);
@@ -1828,6 +1829,18 @@ function App() {
       setGlobalRankingRows(Array.isArray(rows) ? rows : []);
     });
   }, [activeManager, sessionData]);
+
+  useEffect(() => {
+    if (!activeManager) return undefined;
+
+    const vouchersRef = collectionGroup(db, "vouchers");
+
+    return onSnapshot(vouchersRef, (snapshot) => {
+      setAllVoucherDocs(
+        snapshot.docs.map((voucherDoc) => ({ id: voucherDoc.id, ...voucherDoc.data() })),
+      );
+    });
+  }, [activeManager]);
 
   useEffect(() => {
     if (!sessionData?.lobbyCode) return undefined;
@@ -3586,6 +3599,7 @@ function App() {
         activeManager={activeManager}
         allTeams={allTeams}
         allTeamSessions={allTeamSessions}
+        allVoucherDocs={allVoucherDocs}
         globalRankingRows={globalRankingRows}
         lobbyData={lobbyData}
         now={now}
@@ -5338,6 +5352,7 @@ function AdminScreen({
   activeManager,
   allTeams,
   allTeamSessions,
+  allVoucherDocs,
   feedbackEntries,
   globalRankingRows,
   lobbyData,
@@ -5482,6 +5497,7 @@ function AdminScreen({
         ) : personalTab === "teams" ? (
           <TeamDirectory
             activeManager={activeManager}
+            allVoucherDocs={allVoucherDocs}
             globalRankingRows={globalRankingRows}
             onUpdateVoucherStatus={onUpdateVoucherStatus}
             pubQuizzes={pubQuizzes}
@@ -5694,6 +5710,7 @@ function TiebreakerPanel({
 
 function TeamDirectory({
   activeManager,
+  allVoucherDocs = [],
   globalRankingRows = [],
   onUpdateVoucherStatus,
   pubQuizzes,
@@ -5709,13 +5726,31 @@ function TeamDirectory({
   const globalRankingMap = new Map(
     globalRankingRows.map((row) => [row.teamId, row]),
   );
+  const teamVoucherMap = new Map();
+
+  allVoucherDocs.forEach((voucher) => {
+    const voucherTeamId = voucher.teamId;
+    if (!voucherTeamId) return;
+    teamVoucherMap.set(voucherTeamId, [
+      ...(teamVoucherMap.get(voucherTeamId) || []),
+      voucher,
+    ]);
+  });
+
   const sortedTeams = aggregateTeamDirectory(teams, teamProfiles)
-    .filter(
-      (team) =>
-        team.rankingOptIn ||
-        team.rankingPassword ||
-        (team.sessions || []).some((session) => [1, 2, 3].includes(Number(session?.rankDaily))),
-    )
+    .filter((team) => {
+      if (team.rankingOptIn || team.rankingPassword) return true;
+
+      const derivedVouchers = buildVoucherEntries(
+        team.sessions || [],
+        teamVoucherMap.get(team.id) || [],
+        pubQuizzes,
+      );
+
+      if (derivedVouchers.length === 0) return false;
+
+      return derivedVouchers.some((voucher) => voucher.status !== "redeemed");
+    })
     .map((team) => {
       const globalRow = globalRankingMap.get(team.teamNameNormalized || team.id);
 
