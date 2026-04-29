@@ -1646,7 +1646,7 @@ function App() {
   }, [activeManager, sessionData]);
 
   useEffect(() => {
-    if (!sessionData) return undefined;
+    if (!activeManager && !sessionData) return undefined;
 
     const globalRankingRef = doc(db, "rankings", "globalCurrent");
 
@@ -1654,7 +1654,7 @@ function App() {
       const rows = snapshot.exists() ? snapshot.data()?.rows || [] : [];
       setGlobalRankingRows(Array.isArray(rows) ? rows : []);
     });
-  }, [sessionData]);
+  }, [activeManager, sessionData]);
 
   useEffect(() => {
     if (!sessionData?.lobbyCode) return undefined;
