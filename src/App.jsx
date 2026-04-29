@@ -1423,6 +1423,7 @@ function App() {
   const [registeredTeams, setRegisteredTeams] = useState([]);
   const [allTeams, setAllTeams] = useState([]);
   const [allTeamSessions, setAllTeamSessions] = useState([]);
+  const [globalRankingRows, setGlobalRankingRows] = useState([]);
   const [teamProfiles, setTeamProfiles] = useState([]);
   const [managers, setManagers] = useState([]);
   const [feedbackEntries, setFeedbackEntries] = useState([]);
@@ -1588,19 +1589,46 @@ function App() {
   useEffect(() => {
     if (!activeManager) return undefined;
 
-    const sessionsRef = collectionGroup(db, "teamSessions");
+    let cancelled = false;
+    const quizEventsRef = collection(db, "quizEvents");
 
-    return onSnapshot(sessionsRef, (snapshot) => {
-      const sessions = snapshot.docs
-        .map((teamDoc) => ({ id: teamDoc.id, ...teamDoc.data() }))
-        .sort((a, b) => {
-          const timeDifference =
-            getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a));
-          return timeDifference || a.teamName.localeCompare(b.teamName);
-        });
+    async function loadAllTeamSessions() {
+      try {
+        const eventsSnapshot = await getDocs(quizEventsRef);
+        const sessionSnapshots = await Promise.all(
+          eventsSnapshot.docs.map((eventDoc) =>
+            getDocs(collection(db, "quizEvents", eventDoc.id, "teamSessions")),
+          ),
+        );
 
-      setAllTeamSessions(sessions);
+        if (cancelled) return;
+
+        const sessions = sessionSnapshots
+          .flatMap((snapshot) =>
+            snapshot.docs.map((teamDoc) => ({ id: teamDoc.id, ...teamDoc.data() })),
+          )
+          .sort((a, b) => {
+            const timeDifference =
+              getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a));
+            return timeDifference || a.teamName.localeCompare(b.teamName);
+          });
+
+        setAllTeamSessions(sessions);
+      } catch (error) {
+        console.error("ALL TEAM SESSIONS LOAD ERROR:", error);
+      }
+    }
+
+    loadAllTeamSessions();
+
+    const unsubscribe = onSnapshot(quizEventsRef, () => {
+      loadAllTeamSessions();
     });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [activeManager]);
 
   useEffect(() => {
@@ -1616,6 +1644,17 @@ function App() {
       setTeamProfiles(nextProfiles);
     });
   }, [activeManager, sessionData]);
+
+  useEffect(() => {
+    if (!sessionData) return undefined;
+
+    const globalRankingRef = doc(db, "rankings", "globalCurrent");
+
+    return onSnapshot(globalRankingRef, (snapshot) => {
+      const rows = snapshot.exists() ? snapshot.data()?.rows || [] : [];
+      setGlobalRankingRows(Array.isArray(rows) ? rows : []);
+    });
+  }, [sessionData]);
 
   useEffect(() => {
     if (!sessionData?.lobbyCode) return undefined;
@@ -3160,6 +3199,7 @@ function App() {
       <RankingScreen
         isAdmin={isAdmin}
         allTeams={allTeams.length ? allTeams : registeredTeams}
+        globalRankingRows={globalRankingRows}
         lobbyData={lobbyData}
         onOpenAdmin={() => setAppView("admin")}
         onOpenFaq={() => setAppView("faq")}
@@ -3191,6 +3231,7 @@ function App() {
         activeManager={activeManager}
         allTeams={allTeams}
         allTeamSessions={allTeamSessions}
+        globalRankingRows={globalRankingRows}
         lobbyData={lobbyData}
         now={now}
         onAddRoundExtraTime={addRoundExtraTime}
@@ -4237,6 +4278,7 @@ function AppMenu({
 
 function RankingScreen({
   allTeams,
+  globalRankingRows,
   isAdmin,
   lobbyData,
   onOpenAdmin,
@@ -4250,7 +4292,16 @@ function RankingScreen({
   const isNarrow = useIsNarrowScreen();
   const dailyRanking = getDailyRankingWithTiebreakers(registeredTeams, lobbyData);
   const dailyTeams = dailyRanking.ranking;
-  const yearlyTeams = aggregateYearlyRanking(allTeams || registeredTeams);
+  const yearlyTeams =
+    globalRankingRows?.length > 0
+      ? globalRankingRows.map((row) => ({
+          id: row.teamId,
+          teamName: row.teamName,
+          totalPoints: row.totalGlobalPoints || 0,
+          totalQuizPoints: row.totalDailyPoints || 0,
+          sessions: row.gamesPlayed || 0,
+        }))
+      : aggregateYearlyRanking(allTeams || registeredTeams);
   const rankingTeams = rankingTab === "daily" ? dailyTeams : yearlyTeams;
   const hasDailyPodiumTie = dailyRanking.tieGroups.length > 0;
   const currentTeamIsTiebreakerEligible = dailyRanking.tieGroups.some((group) =>
@@ -4702,6 +4753,7 @@ function AdminScreen({
   allTeams,
   allTeamSessions,
   feedbackEntries,
+  globalRankingRows,
   lobbyData,
   managers,
   now,
@@ -4834,6 +4886,7 @@ function AdminScreen({
           />
         ) : personalTab === "teams" ? (
           <TeamDirectory
+            globalRankingRows={globalRankingRows}
             pubQuizzes={pubQuizzes}
             teamProfiles={teamProfiles}
             teams={allTeamSessions.length ? allTeamSessions : allTeams}
@@ -5042,13 +5095,28 @@ function TiebreakerPanel({
   );
 }
 
-function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
+function TeamDirectory({ globalRankingRows = [], pubQuizzes, teamProfiles, teams }) {
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const isNarrow = useIsNarrowScreen();
-  const sortedTeams = aggregateTeamDirectory(teams, teamProfiles).filter(
-    (team) => team.rankingOptIn || team.rankingPassword,
+  const globalRankingMap = new Map(
+    globalRankingRows.map((row) => [row.teamId, row]),
   );
+  const sortedTeams = aggregateTeamDirectory(teams, teamProfiles)
+    .filter((team) => team.rankingOptIn || team.rankingPassword)
+    .map((team) => {
+      const globalRow = globalRankingMap.get(team.teamNameNormalized || team.id);
+
+      if (!globalRow) return team;
+
+      return {
+        ...team,
+        sessions: team.sessions || [],
+        totalPoints: Number(globalRow.totalGlobalPoints) || team.totalPoints || 0,
+        totalDailyPoints: Number(globalRow.totalDailyPoints) || 0,
+        gamesPlayed: Number(globalRow.gamesPlayed) || team.sessions.length || 0,
+      };
+    });
   const selectedTeam =
     sortedTeams.find((team) => team.id === selectedTeamId) || sortedTeams[0];
   const selectedSessions = selectedTeam?.sessions || [];
@@ -5124,8 +5192,8 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
                     <strong>{team.teamName}</strong>
                     <br />
                     <span style={{ color: "#94a3b8" }}>
-                      {team.sessions.length} PQ
-                      {team.sessions.length === 1 ? "" : "ze"} -{" "}
+                      {(team.gamesPlayed ?? team.sessions.length)} PQ
+                      {(team.gamesPlayed ?? team.sessions.length) === 1 ? "" : "ze"} -{" "}
                       {team.rankingOptIn ? "Jahresranking" : "nur Tagesranking"}
                     </span>
                   </span>
@@ -5152,7 +5220,7 @@ function TeamDirectory({ pubQuizzes, teamProfiles, teams }) {
             </p>
             <p style={{ color: "#cbd5e1" }}>
               Punkte gesamt: <strong>{selectedTeam.totalPoints || 0}</strong> -{" "}
-              Teilnahmen <strong>{selectedTeam.sessions.length}</strong>
+              Teilnahmen <strong>{selectedTeam.gamesPlayed ?? selectedTeam.sessions.length}</strong>
             </p>
             <p style={{ color: "#cbd5e1" }}>
               Jahresranking:{" "}
