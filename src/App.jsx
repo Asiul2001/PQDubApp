@@ -72,6 +72,7 @@ const pointMessages = [
 ];
 
 const ANSWER_WINDOW_MS = 5 * 60 * 60 * 1000;
+const EMERGENCY_JOIN_WINDOW_MS = 5 * 60 * 1000;
 
 function normalizeTeamName(name) {
   return name
@@ -366,6 +367,32 @@ function isAnswerWindowClosed(lobbyData, now) {
   const endsAtMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
 
   return Boolean(endsAtMs && now > endsAtMs);
+}
+
+function getSecondQuizRound(quizRounds) {
+  return quizRounds?.[1] || defaultQuizRounds[1] || null;
+}
+
+function getEmergencyJoinWindowEndsMs(lobbyData) {
+  return getTimestampMs(lobbyData?.emergencyJoinWindowEndsAt);
+}
+
+function isEmergencyJoinWindowActive(lobbyData, now) {
+  const endsAtMs = getEmergencyJoinWindowEndsMs(lobbyData);
+
+  return Boolean(endsAtMs && now <= endsAtMs);
+}
+
+function isJoinClosedForNewTeams(lobbyData, quizRounds, now) {
+  const secondRound = getSecondQuizRound(quizRounds);
+
+  if (!secondRound) return false;
+  if (isEmergencyJoinWindowActive(lobbyData, now)) return false;
+
+  return Boolean(
+    lobbyData?.activeRoundId === secondRound.id ||
+      lobbyData?.unlockedRounds?.[secondRound.id],
+  );
 }
 
 function canManageManagerRecords(activeManager, managers) {
@@ -701,6 +728,102 @@ function getQuizLabelForSession(session, pubQuizzes = []) {
   );
 
   return matchingQuiz?.title || session?.quizCode || session?.lobbyCode || "Pubquiz";
+}
+
+function getVoucherReward(rank) {
+  if (rank === 1) {
+    return {
+      title: "1. Platz Gutschein",
+      description: "50 Euro Gutschein Verzehr bei uns (ganz einloesbar)",
+    };
+  }
+
+  if (rank === 2) {
+    return {
+      title: "2. Platz Gutschein",
+      description: "6 Getraenke, Fassbier oder Softdrinks",
+    };
+  }
+
+  if (rank === 3) {
+    return {
+      title: "3. Platz Gutschein",
+      description: "6 Schnaepse",
+    };
+  }
+
+  return null;
+}
+
+function getVoucherIdForSession(session) {
+  const rank = Number(session?.rankDaily);
+  const eventId = session?.eventId || getEventId(session?.lobbyCode || session?.quizCode || "");
+  const teamId = session?.teamId || session?.id || session?.teamNameNormalized;
+
+  if (!eventId || !teamId || ![1, 2, 3].includes(rank)) return "";
+
+  return `${eventId}__${teamId}__rank${rank}`;
+}
+
+function buildVoucherEntries(sessions = [], voucherDocs = [], pubQuizzes = []) {
+  const voucherDocMap = new Map(voucherDocs.map((voucher) => [voucher.id, voucher]));
+  const derivedEntries = sessions
+    .filter((session) => [1, 2, 3].includes(Number(session?.rankDaily)))
+    .map((session) => {
+      const rank = Number(session.rankDaily);
+      const reward = getVoucherReward(rank);
+      const id = getVoucherIdForSession(session);
+      const storedVoucher = voucherDocMap.get(id);
+
+      return {
+        id,
+        eventId: session.eventId || null,
+        quizCode: session.quizCode || session.lobbyCode || "",
+        quizLabel:
+          storedVoucher?.quizLabel || getQuizLabelForSession(session, pubQuizzes),
+        awardedAt:
+          storedVoucher?.awardedAt ||
+          getCompletionValue(session) ||
+          session?.createdAt ||
+          null,
+        rank,
+        title: storedVoucher?.title || reward?.title || "Gutschein",
+        description:
+          storedVoucher?.description || reward?.description || "Gewinn aus dem Pubquiz",
+        status: storedVoucher?.status || "earned",
+        requestedAt: storedVoucher?.requestedAt || null,
+        redeemedAt: storedVoucher?.redeemedAt || null,
+        sourceSessionId: session.id,
+        teamId: session.teamId || session.id || "",
+        teamName: session.teamName || "",
+        totalPoints: Number(session.totalPoints) || 0,
+      };
+    });
+
+  const existingIds = new Set(derivedEntries.map((entry) => entry.id));
+  const docOnlyEntries = voucherDocs
+    .filter((voucher) => !existingIds.has(voucher.id))
+    .map((voucher) => ({
+      id: voucher.id,
+      eventId: voucher.eventId || null,
+      quizCode: voucher.quizCode || "",
+      quizLabel: voucher.quizLabel || voucher.quizCode || "Pubquiz",
+      awardedAt: voucher.awardedAt || voucher.createdAt || null,
+      rank: Number(voucher.rank) || 0,
+      title: voucher.title || "Gutschein",
+      description: voucher.description || "",
+      status: voucher.status || "earned",
+      requestedAt: voucher.requestedAt || null,
+      redeemedAt: voucher.redeemedAt || null,
+      sourceSessionId: voucher.sourceSessionId || "",
+      teamId: voucher.teamId || "",
+      teamName: voucher.teamName || "",
+      totalPoints: Number(voucher.totalPoints) || 0,
+    }));
+
+  return [...derivedEntries, ...docOnlyEntries].sort(
+    (a, b) => getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt),
+  );
 }
 
 function createEmptyPubQuizQuestion(roundIndex, questionIndex) {
@@ -1423,6 +1546,7 @@ function App() {
   const [registeredTeams, setRegisteredTeams] = useState([]);
   const [allTeams, setAllTeams] = useState([]);
   const [allTeamSessions, setAllTeamSessions] = useState([]);
+  const [teamHistorySessions, setTeamHistorySessions] = useState([]);
   const [globalRankingRows, setGlobalRankingRows] = useState([]);
   const [teamProfiles, setTeamProfiles] = useState([]);
   const [managers, setManagers] = useState([]);
@@ -1548,6 +1672,55 @@ function App() {
       setPubQuizzes(nextPubQuizzes);
     });
   }, [activeManager]);
+
+  useEffect(() => {
+    if (!sessionData) {
+      setTeamHistorySessions([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+    const quizEventsRef = collection(db, "quizEvents");
+    const targetTeamId =
+      sessionData.teamId || sessionId || sessionData.teamNameNormalized || "";
+
+    async function loadTeamHistorySessions() {
+      if (!targetTeamId) {
+        if (!cancelled) setTeamHistorySessions([]);
+        return;
+      }
+
+      try {
+        const eventsSnapshot = await getDocs(quizEventsRef);
+        const sessionSnapshots = await Promise.all(
+          eventsSnapshot.docs.map((eventDoc) =>
+            getDoc(doc(db, "quizEvents", eventDoc.id, "teamSessions", targetTeamId)),
+          ),
+        );
+
+        if (cancelled) return;
+
+        const sessions = sessionSnapshots
+          .filter((snapshot) => snapshot.exists())
+          .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }))
+          .sort((a, b) => {
+            const timeDifference =
+              getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a));
+            return timeDifference || a.teamName.localeCompare(b.teamName);
+          });
+
+        setTeamHistorySessions(sessions);
+      } catch (error) {
+        console.error("TEAM HISTORY LOAD ERROR:", error);
+      }
+    }
+
+    loadTeamHistorySessions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionData, sessionId]);
 
   useEffect(() => {
     if (!activeManager) return undefined;
@@ -2121,6 +2294,8 @@ function App() {
       );
 
       await ensureLobby(cleanedCode);
+      const lobbySnapshot = await getDoc(getEventRef(cleanedCode));
+      const joinLobbyData = lobbySnapshot.exists() ? lobbySnapshot.data() : null;
 
       const teamProfileRef = getTeamRef(normalized);
       const teamProfileSnapshot = await getDoc(teamProfileRef);
@@ -2141,6 +2316,20 @@ function App() {
 
         if (!teamProfileRankingOptIn) {
           setMessage("Dieses Team hat aktuell keinen Jahresranking-Zugang. Nutzt bitte 'nur heute'.");
+          return;
+        }
+
+        if (
+          !existing.exists() &&
+          isJoinClosedForNewTeams(
+            joinLobbyData,
+            selectedPubQuiz.rounds?.length ? selectedPubQuiz.rounds : defaultQuizRounds,
+            now,
+          )
+        ) {
+          setMessage(
+            "Die Anmeldung ist seit Runde 2 geschlossen. Fragt das Personal nach einer Not-Anmeldung.",
+          );
           return;
         }
 
@@ -2306,6 +2495,19 @@ function App() {
         return;
       }
 
+      if (
+        isJoinClosedForNewTeams(
+          joinLobbyData,
+          selectedPubQuiz.rounds?.length ? selectedPubQuiz.rounds : defaultQuizRounds,
+          now,
+        )
+      ) {
+        setMessage(
+          "Die Anmeldung ist seit Runde 2 geschlossen. Fragt das Personal nach einer Not-Anmeldung.",
+        );
+        return;
+      }
+
       if (teamProfileSnapshot.exists()) {
         await setDoc(
           teamProfileRef,
@@ -2387,6 +2589,23 @@ function App() {
     const rankingPassword = rankingOptIn ? createRankingPassword() : "";
 
     try {
+      const lobbySnapshot = await getDoc(getEventRef(cleanedCode));
+      const joinLobbyData = lobbySnapshot.exists() ? lobbySnapshot.data() : null;
+
+      if (
+        isJoinClosedForNewTeams(
+          joinLobbyData,
+          activePubQuiz?.rounds?.length ? activePubQuiz.rounds : defaultQuizRounds,
+          now,
+        )
+      ) {
+        setPendingTeamCreate(null);
+        setMessage(
+          "Die Anmeldung ist seit Runde 2 geschlossen. Fragt das Personal nach einer Not-Anmeldung.",
+        );
+        return;
+      }
+
       await saveTeamSession({
         cleanedCode,
         cleanedName,
@@ -2746,6 +2965,38 @@ function App() {
     } catch (error) {
       console.error("ROUND EXTRA TIME ERROR:", error);
       setQuizManagerMessage(`Zusatzzeit konnte nicht vergeben werden: ${error.message}`);
+      return false;
+    }
+  }
+
+  async function openEmergencyJoinWindow() {
+    if (!isAdmin || !sessionData?.lobbyCode) return false;
+
+    try {
+      const lobbyRef = getEventRef(sessionData.lobbyCode);
+      const reopenUntil = new Date(Date.now() + EMERGENCY_JOIN_WINDOW_MS);
+
+      await setDoc(
+        lobbyRef,
+        {
+          quizId: latestQuizId,
+          lobbyCode: sessionData.lobbyCode,
+          emergencyJoinWindowEndsAt: reopenUntil,
+          emergencyJoinAnnouncement: {
+            message:
+              "Sorry, wir hatten einen Fehler. Die Anmeldung ist noch einmal kurz offen.",
+            updatedAt: serverTimestamp(),
+          },
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      setQuizManagerMessage("Not-Anmeldung ist jetzt fuer 5 Minuten offen.");
+      return true;
+    } catch (error) {
+      console.error("EMERGENCY JOIN WINDOW ERROR:", error);
+      setQuizManagerMessage(`Not-Anmeldung konnte nicht geoeffnet werden: ${error.message}`);
       return false;
     }
   }
@@ -3134,6 +3385,88 @@ function App() {
     }
   }
 
+  async function updateVoucherStatus({
+    voucher,
+    nextStatus,
+    sourceSession,
+    teamId,
+    teamName,
+  }) {
+    const targetTeamId =
+      teamId ||
+      voucher?.teamId ||
+      sessionData?.teamId ||
+      sessionId ||
+      sessionData?.teamNameNormalized;
+
+    if (!targetTeamId || !voucher?.id) {
+      return { ok: false, message: "Gutschein konnte nicht zugeordnet werden." };
+    }
+
+    const voucherRef = doc(db, "teams", targetTeamId, "vouchers", voucher.id);
+
+    try {
+      await setDoc(
+        voucherRef,
+        {
+          id: voucher.id,
+          eventId:
+            voucher.eventId ||
+            sourceSession?.eventId ||
+            getEventId(voucher.quizCode || sourceSession?.lobbyCode || ""),
+          quizCode:
+            voucher.quizCode || sourceSession?.quizCode || sourceSession?.lobbyCode || "",
+          quizLabel:
+            voucher.quizLabel || getQuizLabelForSession(sourceSession || voucher, pubQuizzes),
+          teamId: targetTeamId,
+          teamName:
+            teamName ||
+            voucher.teamName ||
+            sessionData?.teamName ||
+            sourceSession?.teamName ||
+            "",
+          rank: Number(voucher.rank) || Number(sourceSession?.rankDaily) || 0,
+          title:
+            voucher.title ||
+            getVoucherReward(Number(voucher.rank))?.title ||
+            "Gutschein",
+          description:
+            voucher.description ||
+            getVoucherReward(Number(voucher.rank))?.description ||
+            "Gewinn aus dem Pubquiz",
+          totalPoints: Number(voucher.totalPoints) || Number(sourceSession?.totalPoints) || 0,
+          sourceSessionId: voucher.sourceSessionId || sourceSession?.id || "",
+          awardedAt:
+            voucher.awardedAt ||
+            getCompletionValue(sourceSession) ||
+            sourceSession?.createdAt ||
+            serverTimestamp(),
+          status: nextStatus,
+          updatedAt: serverTimestamp(),
+          ...(nextStatus === "requested" ? { requestedAt: serverTimestamp() } : {}),
+          ...(nextStatus === "redeemed" ? { redeemedAt: serverTimestamp() } : {}),
+        },
+        { merge: true },
+      );
+
+      return {
+        ok: true,
+        message:
+          nextStatus === "requested"
+            ? "Gutschein zur Einloesung angefragt."
+            : nextStatus === "redeemed"
+              ? "Gutschein als eingeloest markiert."
+              : "Gutschein aktualisiert.",
+      };
+    } catch (error) {
+      console.error("VOUCHER STATUS ERROR:", error);
+      return {
+        ok: false,
+        message: `Gutschein konnte nicht gespeichert werden: ${error.message}`,
+      };
+    }
+  }
+
   if (!sessionData) {
     return (
       <MobileLobbyScreen
@@ -3204,9 +3537,30 @@ function App() {
         onOpenAdmin={() => setAppView("admin")}
         onOpenFaq={() => setAppView("faq")}
         onOpenMain={() => setAppView("main")}
+        onOpenVouchers={() => setAppView("vouchers")}
         registeredTeams={registeredTeams}
         sessionData={sessionData}
         sessionId={sessionId}
+      />
+    );
+  }
+
+  if (appView === "vouchers") {
+    return (
+      <VoucherScreen
+        allTeamSessions={allTeamSessions}
+        globalRankingRows={globalRankingRows}
+        isAdmin={isAdmin}
+        onOpenAdmin={() => setAppView("admin")}
+        onOpenFaq={() => setAppView("faq")}
+        onOpenMain={() => setAppView("main")}
+        onOpenRanking={() => setAppView("ranking")}
+        pubQuizzes={pubQuizzes}
+        sessionData={sessionData}
+        teamHistorySessions={teamHistorySessions}
+        teamProfiles={teamProfiles}
+        teamSessionId={sessionId}
+        onUpdateVoucherStatus={updateVoucherStatus}
       />
     );
   }
@@ -3219,6 +3573,7 @@ function App() {
         onOpenAdmin={() => setAppView("admin")}
         onOpenMain={() => setAppView("main")}
         onOpenRanking={() => setAppView("ranking")}
+        onOpenVouchers={() => setAppView("vouchers")}
         onSubmitFeedback={submitFeedback}
         sessionData={sessionData}
       />
@@ -3235,10 +3590,12 @@ function App() {
         lobbyData={lobbyData}
         now={now}
         onAddRoundExtraTime={addRoundExtraTime}
+        onOpenEmergencyJoinWindow={openEmergencyJoinWindow}
         onOpenAdmin={() => setAppView("admin")}
         onOpenMain={() => setAppView("main")}
         onOpenFaq={() => setAppView("faq")}
         onOpenRanking={() => setAppView("ranking")}
+        onOpenVouchers={() => setAppView("vouchers")}
         onLoadPubQuizByCode={loadPubQuizByCode}
         onRevealRoundAnswers={revealRoundAnswers}
         onSaveManager={saveManager}
@@ -3256,6 +3613,7 @@ function App() {
         selectedRound={activeRound}
         sessionData={sessionData}
         teamProfiles={teamProfiles}
+        onUpdateVoucherStatus={updateVoucherStatus}
       />
     );
   }
@@ -3270,6 +3628,7 @@ function App() {
         onOpenFaq={() => setAppView("faq")}
         onOpenMain={() => setAppView("main")}
         onOpenRanking={() => setAppView("ranking")}
+        onOpenVouchers={() => setAppView("vouchers")}
         onRoundChange={setActiveRoundId}
         onUnlockRound={unlockRound}
         quizRounds={quizRounds}
@@ -3296,6 +3655,7 @@ function App() {
       onOpenMain={() => setAppView("main")}
       onRevealHint={revealHint}
       onOpenRanking={() => setAppView("ranking")}
+      onOpenVouchers={() => setAppView("vouchers")}
       onRoundChange={setActiveRoundId}
       onStartTeamRound={startTeamRound}
       onTiebreakerReady={markTeamTiebreakerReady}
@@ -4129,6 +4489,7 @@ function AppMenu({
   onOpenFaq,
   onOpenMain,
   onOpenRanking,
+  onOpenVouchers,
 }) {
   const [open, setOpen] = useState(false);
 
@@ -4226,6 +4587,28 @@ function AppMenu({
           >
             Ranking
           </button>
+          {onOpenVouchers && (
+            <button
+              onClick={() => {
+                setOpen(false);
+                onOpenVouchers();
+              }}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                border: "none",
+                borderRadius: 8,
+                background: "#0b1220",
+                color: "#e5e7eb",
+                fontWeight: 700,
+                textAlign: "left",
+                cursor: "pointer",
+                marginTop: 8,
+              }}
+            >
+              Gutscheine
+            </button>
+          )}
           {onOpenFaq && (
             <button
               onClick={() => {
@@ -4284,6 +4667,7 @@ function RankingScreen({
   onOpenAdmin,
   onOpenFaq,
   onOpenMain,
+  onOpenVouchers,
   registeredTeams,
   sessionData,
   sessionId,
@@ -4330,6 +4714,7 @@ function RankingScreen({
         onOpenFaq={onOpenFaq}
         onOpenMain={onOpenMain}
         onOpenRanking={() => {}}
+        onOpenVouchers={onOpenVouchers}
       />
       <section
         style={{
@@ -4517,6 +4902,7 @@ function FaqScreen({
   onOpenAdmin,
   onOpenMain,
   onOpenRanking,
+  onOpenVouchers,
   onSubmitFeedback,
   sessionData,
 }) {
@@ -4584,6 +4970,7 @@ function FaqScreen({
         onOpenAdmin={onOpenAdmin}
         onOpenMain={onOpenMain}
         onOpenRanking={onOpenRanking}
+        onOpenVouchers={onOpenVouchers}
       />
       <section
         style={{
@@ -4748,6 +5135,205 @@ function FaqScreen({
   );
 }
 
+function VoucherScreen({
+  allTeamSessions,
+  globalRankingRows,
+  isAdmin,
+  onOpenAdmin,
+  onOpenFaq,
+  onOpenMain,
+  onOpenRanking,
+  pubQuizzes,
+  sessionData,
+  teamHistorySessions,
+  teamProfiles,
+  teamSessionId,
+  onUpdateVoucherStatus,
+}) {
+  const [voucherDocs, setVoucherDocs] = useState([]);
+  const [voucherMessage, setVoucherMessage] = useState("");
+  const isNarrow = useIsNarrowScreen();
+  const teamId =
+    sessionData?.teamId || teamSessionId || sessionData?.teamNameNormalized || "";
+  const teamProfile = teamProfiles.find((profile) => profile.id === teamId);
+  const teamName = sessionData?.teamName || teamProfile?.teamName || teamProfile?.name || "";
+  const vouchers = buildVoucherEntries(teamHistorySessions, voucherDocs, pubQuizzes);
+  const wonVoucherCount = vouchers.length;
+  const redeemedVoucherCount = vouchers.filter(
+    (voucher) => voucher.status === "redeemed",
+  ).length;
+  const totalPoints =
+    globalRankingRows.find((row) => row.teamId === teamId)?.totalGlobalPoints ||
+    teamProfile?.totalGlobalPoints ||
+    0;
+
+  useEffect(() => {
+    if (!teamId) {
+      setVoucherDocs([]);
+      return undefined;
+    }
+
+    const vouchersRef = collection(db, "teams", teamId, "vouchers");
+
+    return onSnapshot(vouchersRef, (snapshot) => {
+      setVoucherDocs(
+        snapshot.docs.map((voucherDoc) => ({ id: voucherDoc.id, ...voucherDoc.data() })),
+      );
+    });
+  }, [teamId]);
+
+  return (
+    <main style={pageStyle}>
+      <AppMenu
+        canOpenRanking
+        isAdmin={isAdmin}
+        onOpenAdmin={onOpenAdmin}
+        onOpenFaq={onOpenFaq}
+        onOpenMain={onOpenMain}
+        onOpenRanking={onOpenRanking}
+        onOpenVouchers={() => {}}
+      />
+      <section
+        style={{
+          maxWidth: 820,
+          margin: "40px auto",
+          padding: 28,
+          border: "1px solid #1f2937",
+          borderRadius: 16,
+          background: "#111827",
+        }}
+      >
+        <p style={{ marginTop: 0, color: "#93c5fd", fontWeight: 700 }}>Gutscheine</p>
+        <h1 style={{ margin: "8px 0 10px", fontSize: 42 }}>Eure Gewinne</h1>
+        <p style={{ color: "#94a3b8", maxWidth: 660 }}>
+          Gewonnene Gutscheine bleiben hier als Verlauf sichtbar. Das Team kann eine
+          Einloesung anfragen, und das Personal markiert sie spaeter vor Ort als
+          eingeloest.
+        </p>
+
+        {sessionData?.managerOnly ? (
+          <div
+            style={{
+              marginTop: 18,
+              padding: 16,
+              border: "1px solid #334155",
+              borderRadius: 14,
+              background: "#0b1220",
+              color: "#cbd5e1",
+            }}
+          >
+            Fuer den Personal-Zugang ist dieser Bereich nur als Erklaerung sichtbar.
+            Team-Gutscheine seht und bearbeitet ihr im `Teamarchiv`.
+          </div>
+        ) : (
+          <>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: isNarrow ? "1fr" : "repeat(3, 1fr)",
+                gap: 12,
+                marginTop: 18,
+              }}
+            >
+              <div style={{ padding: 16, borderRadius: 14, background: "#0b1220", border: "1px solid #1f2937" }}>
+                <strong style={{ display: "block", color: "#93c5fd" }}>Team</strong>
+                <span>{teamName || "nicht erkannt"}</span>
+              </div>
+              <div style={{ padding: 16, borderRadius: 14, background: "#0b1220", border: "1px solid #1f2937" }}>
+                <strong style={{ display: "block", color: "#93c5fd" }}>Gewonnene Gutscheine</strong>
+                <span>{wonVoucherCount}</span>
+              </div>
+              <div style={{ padding: 16, borderRadius: 14, background: "#0b1220", border: "1px solid #1f2937" }}>
+                <strong style={{ display: "block", color: "#93c5fd" }}>Jahrespunkte</strong>
+                <span>{totalPoints}</span>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gap: 12, marginTop: 22 }}>
+              {vouchers.length === 0 ? (
+                <div
+                  style={{
+                    padding: 18,
+                    borderRadius: 14,
+                    border: "1px solid #1f2937",
+                    background: "#0b1220",
+                    color: "#94a3b8",
+                  }}
+                >
+                  Dieses Team hat bisher noch keinen Gutschein gewonnen.
+                </div>
+              ) : (
+                vouchers.map((voucher) => {
+                  const sourceSession = teamHistorySessions.find(
+                    (session) => getVoucherIdForSession(session) === voucher.id,
+                  );
+
+                  return (
+                    <article
+                      key={voucher.id}
+                      style={{
+                        padding: 18,
+                        borderRadius: 14,
+                        border: "1px solid #1f2937",
+                        background: "#0b1220",
+                      }}
+                    >
+                      <strong style={{ display: "block", fontSize: 20 }}>
+                        {voucher.title}
+                      </strong>
+                      <span style={{ display: "block", marginTop: 6, color: "#cbd5e1" }}>
+                        {voucher.description}
+                      </span>
+                      <span style={{ display: "block", marginTop: 8, color: "#94a3b8" }}>
+                        {voucher.quizLabel} - Platz {voucher.rank} - {voucher.totalPoints} Punkte
+                      </span>
+                      <span style={{ display: "block", marginTop: 4, color: "#94a3b8" }}>
+                        Status:{" "}
+                        <strong>
+                          {voucher.status === "redeemed"
+                            ? "eingeloest"
+                            : voucher.status === "requested"
+                              ? "angefragt"
+                              : "verfuegbar"}
+                        </strong>
+                        {voucher.status === "redeemed" && voucher.redeemedAt
+                          ? ` seit ${formatCompletionDate(voucher.redeemedAt)}`
+                          : ""}
+                      </span>
+                      {voucher.status === "earned" && onUpdateVoucherStatus && (
+                        <button
+                          onClick={async () => {
+                            const result = await onUpdateVoucherStatus({
+                              voucher,
+                              nextStatus: "requested",
+                              sourceSession,
+                              teamId,
+                              teamName,
+                            });
+                            setVoucherMessage(result.message);
+                          }}
+                          style={{ marginTop: 12 }}
+                        >
+                          Einloesung anfragen
+                        </button>
+                      )}
+                    </article>
+                  );
+                })
+              )}
+            </div>
+
+            <p style={{ color: "#94a3b8", marginTop: 18 }}>
+              Bereits eingeloest: <strong>{redeemedVoucherCount}</strong>
+            </p>
+            {voucherMessage && <p style={{ color: "#93c5fd" }}>{voucherMessage}</p>}
+          </>
+        )}
+      </section>
+    </main>
+  );
+}
+
 function AdminScreen({
   activeManager,
   allTeams,
@@ -4758,16 +5344,19 @@ function AdminScreen({
   managers,
   now,
   onAddRoundExtraTime,
+  onOpenEmergencyJoinWindow,
   onOpenAdmin,
   onOpenFaq,
   onOpenMain,
   onOpenRanking,
+  onOpenVouchers,
   onLoadPubQuizByCode,
   onRevealRoundAnswers,
   onSaveManager,
   onSavePubQuiz,
   onRoundChange,
   onUnlockRound,
+  onUpdateVoucherStatus,
   pubQuizzes,
   quizManagerMessage,
   questions,
@@ -4822,6 +5411,7 @@ function AdminScreen({
         onOpenFaq={onOpenFaq}
         onOpenMain={onOpenMain}
         onOpenRanking={onOpenRanking}
+        onOpenVouchers={onOpenVouchers}
       />
       <section
         style={{
@@ -4871,10 +5461,15 @@ function AdminScreen({
 
         {personalTab === "live" ? (
           <LiveControlPanel
+            canOpenEmergencyJoinWindow={isRoundUnlocked(
+              lobbyData,
+              getSecondQuizRound(quizRounds)?.id,
+            )}
             answersRevealed={answersRevealed}
             canRevealAnswers={canRevealAnswers}
             lobbyData={lobbyData}
             now={now}
+            onOpenEmergencyJoinWindow={onOpenEmergencyJoinWindow}
             onAddRoundExtraTime={onAddRoundExtraTime}
             onRevealRoundAnswers={onRevealRoundAnswers}
             onRoundChange={onRoundChange}
@@ -4886,7 +5481,9 @@ function AdminScreen({
           />
         ) : personalTab === "teams" ? (
           <TeamDirectory
+            activeManager={activeManager}
             globalRankingRows={globalRankingRows}
+            onUpdateVoucherStatus={onUpdateVoucherStatus}
             pubQuizzes={pubQuizzes}
             teamProfiles={teamProfiles}
             teams={allTeamSessions.length ? allTeamSessions : allTeams}
@@ -5095,16 +5692,30 @@ function TiebreakerPanel({
   );
 }
 
-function TeamDirectory({ globalRankingRows = [], pubQuizzes, teamProfiles, teams }) {
+function TeamDirectory({
+  activeManager,
+  globalRankingRows = [],
+  onUpdateVoucherStatus,
+  pubQuizzes,
+  teamProfiles,
+  teams,
+}) {
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
+  const [selectedTeamVoucherDocs, setSelectedTeamVoucherDocs] = useState([]);
   const [teamSearch, setTeamSearch] = useState("");
+  const [voucherMessage, setVoucherMessage] = useState("");
   const isNarrow = useIsNarrowScreen();
   const globalRankingMap = new Map(
     globalRankingRows.map((row) => [row.teamId, row]),
   );
   const sortedTeams = aggregateTeamDirectory(teams, teamProfiles)
-    .filter((team) => team.rankingOptIn || team.rankingPassword)
+    .filter(
+      (team) =>
+        team.rankingOptIn ||
+        team.rankingPassword ||
+        (team.sessions || []).some((session) => [1, 2, 3].includes(Number(session?.rankDaily))),
+    )
     .map((team) => {
       const globalRow = globalRankingMap.get(team.teamNameNormalized || team.id);
 
@@ -5130,6 +5741,11 @@ function TeamDirectory({ globalRankingRows = [], pubQuizzes, teamProfiles, teams
   const selectedTeam =
     visibleTeams.find((team) => team.id === selectedTeamId) || visibleTeams[0];
   const selectedSessions = selectedTeam?.sessions || [];
+  const selectedTeamVouchers = buildVoucherEntries(
+    selectedSessions,
+    selectedTeamVoucherDocs,
+    pubQuizzes,
+  );
   const selectedSession =
     selectedSessions.find((session) => session.id === selectedSessionId) ||
     selectedSessions[0];
@@ -5162,11 +5778,26 @@ function TeamDirectory({ globalRankingRows = [], pubQuizzes, teamProfiles, teams
     }
   }, [selectedTeamId, visibleTeams]);
 
+  useEffect(() => {
+    if (!selectedTeam?.id) {
+      setSelectedTeamVoucherDocs([]);
+      return undefined;
+    }
+
+    const vouchersRef = collection(db, "teams", selectedTeam.id, "vouchers");
+
+    return onSnapshot(vouchersRef, (snapshot) => {
+      setSelectedTeamVoucherDocs(
+        snapshot.docs.map((voucherDoc) => ({ id: voucherDoc.id, ...voucherDoc.data() })),
+      );
+    });
+  }, [selectedTeam?.id]);
+
   return (
     <section style={{ marginTop: 24 }}>
       <h2>Teamarchiv</h2>
       <p style={{ marginTop: 0, color: "#94a3b8" }}>
-        Alle Ranking-Teams und ihre bisherigen Pubquiz-Teilnahmen im Überblick.
+        Ranking-Teams und Podiums-Teams mit ihren bisherigen Pubquiz-Teilnahmen im Überblick.
       </p>
       <label style={{ display: "grid", gap: 8, marginBottom: 16 }}>
         <span style={{ color: "#cbd5e1", fontWeight: 700 }}>Team suchen</span>
@@ -5259,6 +5890,66 @@ function TeamDirectory({ globalRankingRows = [], pubQuizzes, teamProfiles, teams
                 Team-Passwort:{" "}
                 <strong>{selectedTeam.rankingPassword || "noch nicht vergeben"}</strong>
               </p>
+            )}
+
+            <h4>Gutscheine</h4>
+            {selectedTeamVouchers.length === 0 ? (
+              <p style={{ color: "#94a3b8" }}>
+                Dieses Team hat bisher keinen Podiums-Gutschein gewonnen.
+              </p>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {selectedTeamVouchers.map((voucher) => (
+                  <div
+                    key={voucher.id}
+                    style={{
+                      padding: 12,
+                      border: "1px solid #1f2937",
+                      borderRadius: 12,
+                      background: "#020617",
+                    }}
+                  >
+                    <strong style={{ display: "block" }}>
+                      {voucher.title} - {voucher.quizLabel}
+                    </strong>
+                    <span style={{ display: "block", marginTop: 6, color: "#cbd5e1" }}>
+                      {voucher.description}
+                    </span>
+                    <span style={{ display: "block", marginTop: 6, color: "#94a3b8" }}>
+                      Platz {voucher.rank} - Status{" "}
+                      <strong>
+                        {voucher.status === "redeemed"
+                          ? "eingeloest"
+                          : voucher.status === "requested"
+                            ? "angefragt"
+                            : "offen"}
+                      </strong>
+                    </span>
+                    {activeManager && onUpdateVoucherStatus && voucher.status !== "redeemed" && (
+                      <button
+                        onClick={async () => {
+                          const result = await onUpdateVoucherStatus({
+                            voucher,
+                            nextStatus: "redeemed",
+                            sourceSession: selectedSessions.find(
+                              (session) => getVoucherIdForSession(session) === voucher.id,
+                            ),
+                            teamId: selectedTeam.id,
+                            teamName: selectedTeam.teamName,
+                          });
+                          setVoucherMessage(result.message);
+                        }}
+                        style={{ marginTop: 10 }}
+                      >
+                        Als eingelöst markieren
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {voucherMessage && (
+              <p style={{ color: "#93c5fd", marginTop: 10 }}>{voucherMessage}</p>
             )}
 
             <h4>Mitglieder</h4>
@@ -5638,10 +6329,12 @@ function ManagerDirectory({ activeManager, managers, message, onSaveManager }) {
 }
 
 function LiveControlPanel({
+  canOpenEmergencyJoinWindow,
   answersRevealed,
   canRevealAnswers,
   lobbyData,
   now,
+  onOpenEmergencyJoinWindow,
   onAddRoundExtraTime,
   onRevealRoundAnswers,
   onRoundChange,
@@ -5656,6 +6349,8 @@ function LiveControlPanel({
   const roundUnlocked = canRevealAnswers || answersRevealed;
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
+  const emergencyJoinWindowEndsMs = getEmergencyJoinWindowEndsMs(lobbyData);
+  const emergencyJoinWindowActive = isEmergencyJoinWindowActive(lobbyData, now);
   const isNarrow = useIsNarrowScreen();
   const roundExtraMinutes = getRoundExtraMinutes(lobbyData, selectedRound.id);
   const extraTimeLimitReached = roundExtraMinutes >= 30;
@@ -5734,6 +6429,19 @@ function LiveControlPanel({
             Zusatzzeit fuer diese Runde:{" "}
             <strong>{roundExtraMinutes} / 30 Minuten</strong>
           </p>
+          {canOpenEmergencyJoinWindow && (
+            <p style={{ color: emergencyJoinWindowActive ? "#86efac" : "#94a3b8" }}>
+              Anmeldung:{" "}
+              {emergencyJoinWindowActive && emergencyJoinWindowEndsMs
+                ? `Not-Anmeldung offen bis ${new Date(
+                    emergencyJoinWindowEndsMs,
+                  ).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}`
+                : "seit Runde 2 geschlossen"}
+            </p>
+          )}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button onClick={() => onUnlockRound(selectedRound.id)}>
               Runde freischalten
@@ -5766,6 +6474,20 @@ function LiveControlPanel({
             >
               Antworten freischalten
             </button>
+            {canOpenEmergencyJoinWindow && (
+              <button
+                onClick={onOpenEmergencyJoinWindow}
+                style={{
+                  background: "transparent",
+                  border: "1px dashed #334155",
+                  color: emergencyJoinWindowActive ? "#86efac" : "#94a3b8",
+                  fontSize: 13,
+                  padding: "8px 10px",
+                }}
+              >
+                Not-Anmeldung
+              </button>
+            )}
           </div>
           {!canRevealAnswers && !answersRevealed && (
             <p style={{ marginBottom: 0, color: "#94a3b8" }}>
@@ -6785,6 +7507,7 @@ function WaitingRoomScreen({
   onOpenFaq,
   onOpenMain,
   onOpenRanking,
+  onOpenVouchers,
   onRoundChange,
   onUnlockRound,
   quizRounds,
@@ -6801,6 +7524,7 @@ function WaitingRoomScreen({
         onOpenFaq={onOpenFaq}
         onOpenMain={onOpenMain}
         onOpenRanking={onOpenRanking}
+        onOpenVouchers={onOpenVouchers}
       />
       <section
         style={{
@@ -6922,6 +7646,7 @@ function QuizScreen({
   onOpenFaq,
   onOpenMain,
   onOpenRanking,
+  onOpenVouchers,
   onRevealHint,
   onRoundChange,
   onStartTeamRound,
@@ -6985,6 +7710,7 @@ function QuizScreen({
         onOpenFaq={onOpenFaq}
         onOpenMain={onOpenMain}
         onOpenRanking={onOpenRanking}
+        onOpenVouchers={onOpenVouchers}
       />
       <header
         style={{

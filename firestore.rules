@@ -169,6 +169,38 @@ service cloud.firestore {
       allow create, update: if hasValidTeamShape();
       allow delete: if false;
 
+      match /vouchers/{voucherId} {
+        allow read: if true;
+        allow create, update: if request.resource.data.keys().hasOnly([
+          "id",
+          "eventId",
+          "quizCode",
+          "quizLabel",
+          "teamId",
+          "teamName",
+          "rank",
+          "title",
+          "description",
+          "totalPoints",
+          "sourceSessionId",
+          "awardedAt",
+          "status",
+          "requestedAt",
+          "redeemedAt",
+          "createdAt",
+          "updatedAt"
+        ])
+        && request.resource.data.id == voucherId
+        && request.resource.data.teamId == teamId
+        && request.resource.data.quizCode is string
+        && request.resource.data.teamName is string
+        && request.resource.data.rank is number
+        && request.resource.data.title is string
+        && request.resource.data.description is string
+        && request.resource.data.status is string;
+        allow delete: if false;
+      }
+
       match /teammates/{teammateId} {
         allow read: if true;
         allow create, update: if request.resource.data.keys().hasOnly([
