@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { db } from "./firebase";
 import {
   arrayUnion,
+  writeBatch,
   collection,
   collectionGroup,
   doc,
@@ -343,8 +344,22 @@ function createTeamRecord({ cleanedName, normalized, rankingOptIn }) {
   };
 }
 
-function hasCompletedSession(session) {
-  return Boolean(getTimestampMs(session?.completedAt));
+function getPodiumBonusForRank(rankIndex) {
+  if (rankIndex === 0) return 1.5;
+  if (rankIndex === 1) return 1;
+  if (rankIndex === 2) return 0.5;
+  return 0;
+}
+
+function getSessionGlobalPoints(session) {
+  const basePoints = Number(session?.totalPoints) || 0;
+  const savedFinalPoints = Number(session?.finalDailyPointsForGlobal);
+
+  if (Number.isFinite(savedFinalPoints)) {
+    return savedFinalPoints;
+  }
+
+  return basePoints + (Number(session?.podiumBonusPoints) || 0);
 }
 
 function isAnswerWindowClosed(lobbyData, now) {
@@ -442,6 +457,8 @@ function aggregateYearlyRanking(teams) {
     lobbyTeams.forEach((team) => {
       const key = team.teamNameNormalized || normalizeTeamName(team.teamName || "");
       if (!key) return;
+      const quizPoints = Number(team.totalPoints) || 0;
+      const globalPoints = getSessionGlobalPoints(team);
 
       const current = groupedTeams.get(key) || {
         id: key,
@@ -457,8 +474,8 @@ function aggregateYearlyRanking(teams) {
 
       groupedTeams.set(key, {
         ...current,
-        totalQuizPoints: current.totalQuizPoints + (team.totalPoints || 0),
-        totalPoints: current.totalPoints + (team.totalPoints || 0),
+        totalQuizPoints: current.totalQuizPoints + quizPoints,
+        totalPoints: current.totalPoints + globalPoints,
         sessions: current.sessions + 1,
         playerNames: Array.from(
           new Set([
@@ -474,45 +491,6 @@ function aggregateYearlyRanking(teams) {
             normalizePersonName(team.playerName || ""),
           ].filter(Boolean)),
         ),
-      });
-    });
-
-    if (
-      lobbyTeams.length === 0 ||
-      !lobbyTeams.every((team) => hasCompletedSession(team))
-    ) {
-      return;
-    }
-
-    const podiumTeams = [...lobbyTeams]
-      .sort(
-        (a, b) =>
-          (b.totalPoints || 0) - (a.totalPoints || 0) ||
-          a.teamName.localeCompare(b.teamName),
-      )
-      .slice(0, 3);
-    const podiumPoints = [1.5, 1, 0.5];
-
-    podiumTeams.forEach((team, index) => {
-      const key = team.teamNameNormalized || normalizeTeamName(team.teamName || "");
-      if (!key) return;
-
-      const current = groupedTeams.get(key) || {
-        id: key,
-        teamName: team.teamName || key,
-        teamNameNormalized: key,
-        podiums: 0,
-        totalQuizPoints: 0,
-        totalPoints: 0,
-        sessions: 0,
-        playerNames: [],
-        normalizedPlayerNames: [],
-      };
-
-      groupedTeams.set(key, {
-        ...current,
-        podiums: current.podiums + 1,
-        totalPoints: current.totalPoints + podiumPoints[index],
       });
     });
   });
@@ -1671,9 +1649,29 @@ function App() {
         totalPoints: team.totalPoints || 0,
         tiebreakerEstimate: getEstimateValue(lobbyData, team.id),
         tiebreakerDistance: getTiebreakerDistance(lobbyData, team.id),
-        podiumBonusPoints: index === 0 ? 1.5 : index === 1 ? 1 : index === 2 ? 0.5 : 0,
+        podiumBonusPoints: getPodiumBonusForRank(index),
       }));
-    const globalRows = aggregateYearlyRanking(allTeams).map((team, index) => ({
+    const finalRound = getLastQuizRound(quizRounds);
+    const eventFinished =
+      Boolean(finalRound) &&
+      registeredTeams.length > 0 &&
+      registeredTeams.every((team) => isRoundFinished(team, finalRound, now, lobbyData));
+    const nextAllTeams = allTeams.map((team) => {
+      if (!eventFinished || team.lobbyCode !== sessionData.lobbyCode) {
+        return team;
+      }
+
+      const row = dailyRows.find((dailyRow) => dailyRow.teamId === team.id);
+      if (!row) return team;
+
+      return {
+        ...team,
+        finalDailyPointsForGlobal: (team.totalPoints || 0) + (row.podiumBonusPoints || 0),
+        podiumBonusPoints: row.podiumBonusPoints || 0,
+        rankDaily: row.rank,
+      };
+    });
+    const globalRows = aggregateYearlyRanking(nextAllTeams).map((team, index) => ({
       rank: index + 1,
       teamId: team.teamNameNormalized || team.id,
       teamName: team.teamName,
@@ -1704,7 +1702,50 @@ function App() {
       },
       { merge: true },
     ).catch((error) => console.error("GLOBAL RANKING SNAPSHOT ERROR:", error));
-  }, [activeManager, allTeams, lobbyData, registeredTeams, sessionData?.lobbyCode]);
+
+    if (!eventFinished) return;
+
+    const batch = writeBatch(db);
+    let hasBatchWrites = false;
+
+    registeredTeams.forEach((team) => {
+      const row = dailyRows.find((dailyRow) => dailyRow.teamId === team.id);
+      if (!row) return;
+
+      const nextPodiumBonusPoints = row.podiumBonusPoints || 0;
+      const nextFinalDailyPointsForGlobal =
+        (team.totalPoints || 0) + nextPodiumBonusPoints;
+      const currentPodiumBonusPoints = Number(team.podiumBonusPoints) || 0;
+      const currentFinalDailyPointsForGlobal = Number(team.finalDailyPointsForGlobal);
+      const currentRankDaily = Number(team.rankDaily);
+
+      if (
+        currentPodiumBonusPoints === nextPodiumBonusPoints &&
+        currentFinalDailyPointsForGlobal === nextFinalDailyPointsForGlobal &&
+        currentRankDaily === row.rank
+      ) {
+        return;
+      }
+
+      batch.set(
+        getTeamSessionRef(sessionData.lobbyCode, team.id),
+        {
+          podiumBonusPoints: nextPodiumBonusPoints,
+          finalDailyPointsForGlobal: nextFinalDailyPointsForGlobal,
+          rankDaily: row.rank,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+      hasBatchWrites = true;
+    });
+
+    if (hasBatchWrites) {
+      batch.commit().catch((error) =>
+        console.error("SESSION BONUS SNAPSHOT ERROR:", error),
+      );
+    }
+  }, [activeManager, allTeams, lobbyData, now, quizRounds, registeredTeams, sessionData?.lobbyCode]);
 
   function updateAnswerDraft(questionId, value) {
     setAnswerDrafts((currentDrafts) => ({
