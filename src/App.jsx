@@ -209,6 +209,19 @@ function getRoundStartMs(lobbyData, roundId) {
   return startedAtMs || null;
 }
 
+function getRoundExtraMinutes(lobbyData, roundId) {
+  const rawValue = Number(lobbyData?.roundExtraMinutes?.[roundId]);
+
+  return Number.isFinite(rawValue) ? Math.max(0, Math.min(30, rawValue)) : 0;
+}
+
+function getRoundDurationMs(round, lobbyData) {
+  const baseDurationMs = (round?.durationMinutes || 0) * 60 * 1000;
+  const extraDurationMs = getRoundExtraMinutes(lobbyData, round?.id) * 60 * 1000;
+
+  return baseDurationMs + extraDurationMs;
+}
+
 function isRoundUnlocked(lobbyData, roundId) {
   return Boolean(lobbyData?.unlockedRounds?.[roundId]);
 }
@@ -391,12 +404,12 @@ function formatStopwatch(ms) {
   ).padStart(3, "0")}`;
 }
 
-function isRoundFinished(team, round, now) {
+function isRoundFinished(team, round, now, lobbyData) {
   const startMs = getRoundStartMs(team, round.id);
 
   if (startMs === null) return false;
 
-  const durationMs = round.durationMinutes * 60 * 1000;
+  const durationMs = getRoundDurationMs(round, lobbyData);
   if (startMs + durationMs <= now) return true;
 
   return round.questionIds.every((questionId) => {
@@ -2307,7 +2320,7 @@ function App() {
     if (!sessionId || !sessionData?.lobbyCode) return;
 
     const finalRound = getLastQuizRound(quizRounds);
-    if (!finalRound || !isRoundFinished(sessionData, finalRound, now)) return;
+    if (!finalRound || !isRoundFinished(sessionData, finalRound, now, lobbyData)) return;
 
     try {
       await updateDoc(getEventRef(sessionData.lobbyCode), {
@@ -2578,6 +2591,60 @@ function App() {
     }
   }
 
+  async function addRoundExtraTime(roundId) {
+    if (!isAdmin || !sessionData?.lobbyCode) return false;
+
+    try {
+      const lobbyRef = getEventRef(sessionData.lobbyCode);
+
+      await runTransaction(db, async (transaction) => {
+        const lobbySnapshot = await transaction.get(lobbyRef);
+        const currentLobby = lobbySnapshot.exists() ? lobbySnapshot.data() : {};
+        const currentExtraMinutes = getRoundExtraMinutes(currentLobby, roundId);
+
+        if (currentExtraMinutes >= 30) {
+          throw new Error("Maximal 30 Minuten Zusatzzeit pro Runde erreicht.");
+        }
+
+        const nextExtraMinutes = Math.min(30, currentExtraMinutes + 10);
+        const grantedMinutes = nextExtraMinutes - currentExtraMinutes;
+
+        transaction.set(
+          lobbyRef,
+          {
+            quizId: latestQuizId,
+            lobbyCode: sessionData.lobbyCode,
+            roundExtraMinutes: {
+              ...(currentLobby.roundExtraMinutes || {}),
+              [roundId]: nextExtraMinutes,
+            },
+            roundExtraAnnouncements: {
+              ...(currentLobby.roundExtraAnnouncements || {}),
+              [roundId]: {
+                grantedMinutes,
+                totalMinutes: nextExtraMinutes,
+                message:
+                  "Sorry, wir haben einen Fehler gemacht. Hier sind ein paar Minuten extra.",
+                updatedAt: serverTimestamp(),
+              },
+            },
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        );
+      });
+
+      setQuizManagerMessage(
+        `Zusatzzeit fuer ${selectedRound.title}: +10 Minuten vergeben.`,
+      );
+      return true;
+    } catch (error) {
+      console.error("ROUND EXTRA TIME ERROR:", error);
+      setQuizManagerMessage(`Zusatzzeit konnte nicht vergeben werden: ${error.message}`);
+      return false;
+    }
+  }
+
   async function savePubQuiz(draft) {
     if (!isAdmin) return;
 
@@ -2772,7 +2839,7 @@ function App() {
     const finalRound = getLastQuizRound(quizRounds);
     const allTeamsFinished =
       registeredTeams.length > 0 &&
-      registeredTeams.every((team) => isRoundFinished(team, finalRound, now));
+      registeredTeams.every((team) => isRoundFinished(team, finalRound, now, lobbyData));
     const allTeamsReady =
       allTeamsFinished &&
       registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
@@ -2825,7 +2892,7 @@ function App() {
     const eligibleIds = new Set(
       dailyRanking.tieGroups.flatMap((group) =>
         group.teams
-          .filter((team) => isRoundFinished(team, finalRound, now))
+          .filter((team) => isRoundFinished(team, finalRound, now, lobbyData))
           .map((team) => team.id),
       ),
     );
@@ -2835,7 +2902,7 @@ function App() {
     };
     const allTeamsFinished =
       registeredTeams.length > 0 &&
-      registeredTeams.every((team) => isRoundFinished(team, finalRound, now));
+      registeredTeams.every((team) => isRoundFinished(team, finalRound, now, lobbyData));
     const allTeamsReady =
       allTeamsFinished &&
       registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
@@ -3009,10 +3076,15 @@ function App() {
     isRoundUnlocked(lobbyData, round.id),
   );
   const finalRound = getLastQuizRound(quizRounds);
-  const currentTeamFinishedFinalRound = isRoundFinished(sessionData, finalRound, now);
+  const currentTeamFinishedFinalRound = isRoundFinished(
+    sessionData,
+    finalRound,
+    now,
+    lobbyData,
+  );
   const allTeamsFinishedFinalRound =
     registeredTeams.length > 0 &&
-    registeredTeams.every((team) => isRoundFinished(team, finalRound, now));
+    registeredTeams.every((team) => isRoundFinished(team, finalRound, now, lobbyData));
   const allTeamsReadyForRanking =
     allTeamsFinishedFinalRound &&
     registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
@@ -3055,6 +3127,7 @@ function App() {
         allTeamSessions={allTeamSessions}
         lobbyData={lobbyData}
         now={now}
+        onAddRoundExtraTime={addRoundExtraTime}
         onOpenAdmin={() => setAppView("admin")}
         onOpenMain={() => setAppView("main")}
         onOpenFaq={() => setAppView("faq")}
@@ -4563,6 +4636,7 @@ function AdminScreen({
   lobbyData,
   managers,
   now,
+  onAddRoundExtraTime,
   onOpenAdmin,
   onOpenFaq,
   onOpenMain,
@@ -4592,7 +4666,7 @@ function AdminScreen({
   const answersRevealed = isRoundAnswersRevealed(lobbyData, selectedRound.id);
   const teamStatuses = registeredTeams.map((team) => {
     const startMs = getRoundStartMs(team, selectedRound.id);
-    const durationMs = selectedRound.durationMinutes * 60 * 1000;
+    const durationMs = getRoundDurationMs(selectedRound, lobbyData);
     const remainingMs = startMs === null ? null : startMs + durationMs - now;
     const expired = startMs !== null && remainingMs <= 0;
 
@@ -4680,6 +4754,7 @@ function AdminScreen({
             canRevealAnswers={canRevealAnswers}
             lobbyData={lobbyData}
             now={now}
+            onAddRoundExtraTime={onAddRoundExtraTime}
             onRevealRoundAnswers={onRevealRoundAnswers}
             onRoundChange={onRoundChange}
             onUnlockRound={onUnlockRound}
@@ -5402,6 +5477,7 @@ function LiveControlPanel({
   canRevealAnswers,
   lobbyData,
   now,
+  onAddRoundExtraTime,
   onRevealRoundAnswers,
   onRoundChange,
   onUnlockRound,
@@ -5415,6 +5491,8 @@ function LiveControlPanel({
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
   const isNarrow = useIsNarrowScreen();
+  const roundExtraMinutes = getRoundExtraMinutes(lobbyData, selectedRound.id);
+  const extraTimeLimitReached = roundExtraMinutes >= 30;
   const selectedTeam =
     teamStatuses.find((team) => team.id === selectedTeamId) || teamStatuses[0] || null;
   const selectedQuestionIds = selectedQuestions.map((question) => question.id);
@@ -5469,9 +5547,27 @@ function LiveControlPanel({
                   })}`
               : "erst nach Quiz-Code laden aktiv"}
           </p>
+          <p style={{ color: "#cbd5e1" }}>
+            Zusatzzeit fuer diese Runde:{" "}
+            <strong>{roundExtraMinutes} / 30 Minuten</strong>
+          </p>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button onClick={() => onUnlockRound(selectedRound.id)}>
               Runde freischalten
+            </button>
+            <button
+              disabled={extraTimeLimitReached}
+              onClick={() => onAddRoundExtraTime(selectedRound.id)}
+              style={{
+                background: extraTimeLimitReached ? "#334155" : "#22c55e",
+                border: "none",
+                color: extraTimeLimitReached ? "#94a3b8" : "#052e16",
+                fontWeight: 700,
+                padding: "8px 12px",
+                cursor: extraTimeLimitReached ? "not-allowed" : "pointer",
+              }}
+            >
+              +10 Minuten fuer alle Teams
             </button>
             <button
               disabled={!canRevealAnswers}
@@ -6662,11 +6758,13 @@ function QuizScreen({
   const remainingHints = Math.max(0, hintBudget - usedHints);
   const roundUnlocked = isRoundUnlocked(lobbyData, activeRound.id);
   const roundStartMs = getRoundStartMs(sessionData, activeRound.id);
-  const roundDurationMs = activeRound.durationMinutes * 60 * 1000;
+  const roundDurationMs = getRoundDurationMs(activeRound, lobbyData);
   const remainingRoundMs =
     roundStartMs === null ? null : roundStartMs + roundDurationMs - now;
   const roundHasStarted = roundStartMs !== null;
   const roundExpired = roundHasStarted && remainingRoundMs <= 0;
+  const roundExtraMinutes = getRoundExtraMinutes(lobbyData, activeRound.id);
+  const roundExtraAnnouncement = lobbyData?.roundExtraAnnouncements?.[activeRound.id];
   const answersRevealed = isRoundAnswersRevealed(lobbyData, activeRound.id);
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
@@ -6744,6 +6842,11 @@ function QuizScreen({
           <p style={{ margin: "8px 0 0", color: "#cbd5e1" }}>
             Hinweise: {remainingHints}/{hintBudget}
           </p>
+          {roundExtraMinutes > 0 && (
+            <p style={{ margin: "8px 0 0", color: "#86efac", fontWeight: 700 }}>
+              Zusatzzeit aktiv: +{roundExtraMinutes} Minuten
+            </p>
+          )}
           <p
             style={{
               margin: "8px 0 0",
@@ -6787,6 +6890,29 @@ function QuizScreen({
         >
           {message}
         </p>
+      )}
+
+      {roundExtraMinutes > 0 && (
+        <section
+          style={{
+            maxWidth: 980,
+            margin: "0 auto 16px",
+            padding: "12px 14px",
+            border: "1px solid #16a34a",
+            borderRadius: 12,
+            background: "#052e16",
+            color: "#dcfce7",
+          }}
+        >
+          <strong style={{ display: "block", marginBottom: 4 }}>
+            Sorry, wir haben einen Fehler gemacht.
+          </strong>
+          <span>
+            {roundExtraAnnouncement?.message ||
+              "Hier sind ein paar Minuten extra fuer alle Teams."}{" "}
+            +{roundExtraMinutes} Minuten fuer {activeRound.title}.
+          </span>
+        </section>
       )}
 
       {tiebreakerFinalRoundFinished && !allTeamsReadyForRanking && (

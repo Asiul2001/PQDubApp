@@ -16,6 +16,8 @@ service cloud.firestore {
         "answerWindowStartedAt",
         "startedAt",
         "closedAt",
+        "roundExtraMinutes",
+        "roundExtraAnnouncements",
         "revealedAnswers",
         "roundStarts",
         "tiebreakerAnswer",
@@ -45,6 +47,8 @@ service cloud.firestore {
       && (!("tiebreakerParticipants" in request.resource.data) || request.resource.data.tiebreakerParticipants is map)
       && (!("tiebreakerReady" in request.resource.data) || request.resource.data.tiebreakerReady is map)
       && (!("finalReady" in request.resource.data) || request.resource.data.finalReady is map)
+      && (!("roundExtraMinutes" in request.resource.data) || request.resource.data.roundExtraMinutes is map)
+      && (!("roundExtraAnnouncements" in request.resource.data) || request.resource.data.roundExtraAnnouncements is map)
       && (!("tiebreakerStatus" in request.resource.data) || request.resource.data.tiebreakerStatus is string)
       && (!("tiebreakerSubmissions" in request.resource.data) || request.resource.data.tiebreakerSubmissions is map);
     }
