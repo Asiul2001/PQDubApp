@@ -635,6 +635,31 @@ function aggregateTeamDirectory(teams, teamProfiles = []) {
     ]),
   );
 
+  teamProfiles.forEach((teamProfile) => {
+    const key =
+      teamProfile.teamNameNormalized ||
+      teamProfile.normalizedName ||
+      normalizeTeamName(teamProfile.teamName || teamProfile.name || "");
+    if (!key) return;
+
+    groupedTeams.set(key, {
+      id: key,
+      normalizedPlayerNames: Array.from(
+        new Set((teamProfile.normalizedPlayerNames || []).filter(Boolean)),
+      ),
+      playerNames: Array.from(new Set((teamProfile.playerNames || []).filter(Boolean))),
+      rankingPassword: teamProfile.rankingPassword || "",
+      rankingOptIn: Boolean(teamProfile.rankingOptIn || teamProfile.yearlyRankingOptIn),
+      sessions: [],
+      teamName: teamProfile.teamName || teamProfile.name || key,
+      teamNameNormalized: key,
+      totalPoints:
+        Number(teamProfile.totalGlobalPoints) ||
+        Number(teamProfile.totalDailyPoints) ||
+        0,
+    });
+  });
+
   teams.forEach((team) => {
     const key = team.teamNameNormalized || normalizeTeamName(team.teamName || "");
     if (!key) return;
