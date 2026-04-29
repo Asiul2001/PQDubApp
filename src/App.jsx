@@ -5098,6 +5098,7 @@ function TiebreakerPanel({
 function TeamDirectory({ globalRankingRows = [], pubQuizzes, teamProfiles, teams }) {
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
+  const [teamSearch, setTeamSearch] = useState("");
   const isNarrow = useIsNarrowScreen();
   const globalRankingMap = new Map(
     globalRankingRows.map((row) => [row.teamId, row]),
@@ -5117,8 +5118,17 @@ function TeamDirectory({ globalRankingRows = [], pubQuizzes, teamProfiles, teams
         gamesPlayed: Number(globalRow.gamesPlayed) || team.sessions.length || 0,
       };
     });
+  const normalizedTeamSearch = normalizeTeamName(teamSearch || "");
+  const visibleTeams = sortedTeams.filter((team) => {
+    if (!normalizedTeamSearch) return true;
+
+    return (
+      normalizeTeamName(team.teamName || "").includes(normalizedTeamSearch) ||
+      (team.teamNameNormalized || "").includes(normalizedTeamSearch)
+    );
+  });
   const selectedTeam =
-    sortedTeams.find((team) => team.id === selectedTeamId) || sortedTeams[0];
+    visibleTeams.find((team) => team.id === selectedTeamId) || visibleTeams[0];
   const selectedSessions = selectedTeam?.sessions || [];
   const selectedSession =
     selectedSessions.find((session) => session.id === selectedSessionId) ||
@@ -5145,12 +5155,28 @@ function TeamDirectory({ globalRankingRows = [], pubQuizzes, teamProfiles, teams
       .filter(Boolean),
   );
 
+  useEffect(() => {
+    if (!visibleTeams.some((team) => team.id === selectedTeamId)) {
+      setSelectedTeamId(visibleTeams[0]?.id || null);
+      setSelectedSessionId(null);
+    }
+  }, [selectedTeamId, visibleTeams]);
+
   return (
     <section style={{ marginTop: 24 }}>
       <h2>Teamarchiv</h2>
       <p style={{ marginTop: 0, color: "#94a3b8" }}>
         Alle Ranking-Teams und ihre bisherigen Pubquiz-Teilnahmen im Überblick.
       </p>
+      <label style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+        <span style={{ color: "#cbd5e1", fontWeight: 700 }}>Team suchen</span>
+        <input
+          value={teamSearch}
+          onChange={(event) => setTeamSearch(event.target.value)}
+          placeholder="Nach Teamname suchen"
+          style={inputStyle}
+        />
+      </label>
       <div
         style={{
           display: "grid",
@@ -5163,8 +5189,10 @@ function TeamDirectory({ globalRankingRows = [], pubQuizzes, teamProfiles, teams
         <div style={{ display: "grid", gap: 10, alignSelf: "start" }}>
           {sortedTeams.length === 0 ? (
             <p style={{ color: "#94a3b8" }}>Noch keine Teams registriert.</p>
+          ) : visibleTeams.length === 0 ? (
+            <p style={{ color: "#94a3b8" }}>Kein Team zu dieser Suche gefunden.</p>
           ) : (
-            sortedTeams.map((team) => {
+            visibleTeams.map((team) => {
               const isSelected = selectedTeam?.id === team.id;
 
               return (
@@ -5624,15 +5652,33 @@ function LiveControlPanel({
   teamStatuses,
 }) {
   const [selectedTeamId, setSelectedTeamId] = useState(null);
+  const [teamSearch, setTeamSearch] = useState("");
   const roundUnlocked = canRevealAnswers || answersRevealed;
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
   const isNarrow = useIsNarrowScreen();
   const roundExtraMinutes = getRoundExtraMinutes(lobbyData, selectedRound.id);
   const extraTimeLimitReached = roundExtraMinutes >= 30;
+  const normalizedTeamSearch = normalizeTeamName(teamSearch || "");
+  const visibleTeamStatuses = teamStatuses.filter((team) => {
+    if (!normalizedTeamSearch) return true;
+
+    return (
+      normalizeTeamName(team.teamName || "").includes(normalizedTeamSearch) ||
+      (team.teamNameNormalized || "").includes(normalizedTeamSearch)
+    );
+  });
   const selectedTeam =
-    teamStatuses.find((team) => team.id === selectedTeamId) || teamStatuses[0] || null;
+    visibleTeamStatuses.find((team) => team.id === selectedTeamId) ||
+    visibleTeamStatuses[0] ||
+    null;
   const selectedQuestionIds = selectedQuestions.map((question) => question.id);
+
+  useEffect(() => {
+    if (!visibleTeamStatuses.some((team) => team.id === selectedTeamId)) {
+      setSelectedTeamId(visibleTeamStatuses[0]?.id || null);
+    }
+  }, [selectedTeamId, visibleTeamStatuses]);
 
   return (
     <>
@@ -5734,6 +5780,15 @@ function LiveControlPanel({
           <p style={{ marginTop: 0, color: "#94a3b8" }}>
             Laufende Teams auswählen und ihre Antworten pro Runde direkt mitverfolgen.
           </p>
+          <label style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+            <span style={{ color: "#cbd5e1", fontWeight: 700 }}>Team suchen</span>
+            <input
+              value={teamSearch}
+              onChange={(event) => setTeamSearch(event.target.value)}
+              placeholder="Nach Teamname suchen"
+              style={inputStyle}
+            />
+          </label>
           <div
             style={{
               display: "grid",
@@ -5744,7 +5799,9 @@ function LiveControlPanel({
             }}
           >
             <div style={{ display: "grid", gap: 10, alignSelf: "start" }}>
-              {teamStatuses.map((team) => {
+              {visibleTeamStatuses.length === 0 ? (
+                <p style={{ color: "#94a3b8" }}>Kein Team zu dieser Suche gefunden.</p>
+              ) : visibleTeamStatuses.map((team) => {
                 const answeredCount = getAnsweredQuestionCount(team, selectedQuestionIds);
                 const isSelected = selectedTeam?.id === team.id;
 
