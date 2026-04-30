@@ -5,6 +5,7 @@ import {
   writeBatch,
   collection,
   collectionGroup,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -3456,8 +3457,24 @@ function App() {
             serverTimestamp(),
           status: nextStatus,
           updatedAt: serverTimestamp(),
-          ...(nextStatus === "requested" ? { requestedAt: serverTimestamp() } : {}),
-          ...(nextStatus === "redeemed" ? { redeemedAt: serverTimestamp() } : {}),
+          ...(nextStatus === "requested"
+            ? {
+                requestedAt: voucher.requestedAt || serverTimestamp(),
+                redeemedAt: deleteField(),
+              }
+            : {}),
+          ...(nextStatus === "redeemed"
+            ? {
+                requestedAt: voucher.requestedAt || serverTimestamp(),
+                redeemedAt: serverTimestamp(),
+              }
+            : {}),
+          ...(nextStatus === "earned"
+            ? {
+                requestedAt: deleteField(),
+                redeemedAt: deleteField(),
+              }
+            : {}),
         },
         { merge: true },
       );
@@ -5991,6 +6008,31 @@ function TeamDirectory({
                         Als eingelöst markieren
                       </button>
                     )}
+                    {activeManager?.headManager &&
+                      onUpdateVoucherStatus &&
+                      voucher.status === "redeemed" && (
+                        <button
+                          onClick={async () => {
+                            const result = await onUpdateVoucherStatus({
+                              voucher,
+                              nextStatus: "earned",
+                              sourceSession: selectedSessions.find(
+                                (session) => getVoucherIdForSession(session) === voucher.id,
+                              ),
+                              teamId: selectedTeam.id,
+                              teamName: selectedTeam.teamName,
+                            });
+                            setVoucherMessage(result.message);
+                          }}
+                          style={{
+                            marginTop: 10,
+                            background: "#1e293b",
+                            color: "#e2e8f0",
+                          }}
+                        >
+                          Einlösung zurücknehmen
+                        </button>
+                      )}
                   </div>
                 ))}
               </div>
