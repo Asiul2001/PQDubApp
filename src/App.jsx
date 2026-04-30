@@ -731,6 +731,21 @@ function getQuizLabelForSession(session, pubQuizzes = []) {
   return matchingQuiz?.title || session?.quizCode || session?.lobbyCode || "Pubquiz";
 }
 
+function getRoundDisplayTitle(round, roundIndex = 0) {
+  const rawTitle = String(round?.title || "").trim();
+  const rawCategory = String(round?.category || "").trim();
+  const genericTitle = rawTitle.match(/^runde\s*\d+$/i);
+
+  if (rawTitle && rawCategory && genericTitle) {
+    return `Runde ${roundIndex + 1}: ${rawCategory}`;
+  }
+
+  if (rawTitle) return rawTitle;
+  if (rawCategory) return `Runde ${roundIndex + 1}: ${rawCategory}`;
+
+  return `Runde ${roundIndex + 1}`;
+}
+
 function getVoucherReward(rank) {
   if (rank === 1) {
     return {
@@ -1203,7 +1218,8 @@ function createRuntimeQuizFromPubQuiz(pubQuiz) {
 
     return {
       id: roundId,
-      title: round.title || `Runde ${roundIndex + 1}`,
+      title: getRoundDisplayTitle(round, roundIndex),
+      category: round.category || "",
       durationMinutes: Number(round.durationMinutes) || 30,
       questionIds,
     };
