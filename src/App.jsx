@@ -73,7 +73,6 @@ const pointMessages = [
 ];
 
 const ANSWER_WINDOW_MS = 5 * 60 * 60 * 1000;
-const EMERGENCY_JOIN_WINDOW_MS = 5 * 60 * 1000;
 
 function normalizeTeamName(name) {
   return name
@@ -370,31 +369,6 @@ function isAnswerWindowClosed(lobbyData, now) {
   return Boolean(endsAtMs && now > endsAtMs);
 }
 
-function getSecondQuizRound(quizRounds) {
-  return quizRounds?.[1] || defaultQuizRounds[1] || null;
-}
-
-function getEmergencyJoinWindowEndsMs(lobbyData) {
-  return getTimestampMs(lobbyData?.emergencyJoinWindowEndsAt);
-}
-
-function isEmergencyJoinWindowActive(lobbyData, now) {
-  const endsAtMs = getEmergencyJoinWindowEndsMs(lobbyData);
-
-  return Boolean(endsAtMs && now <= endsAtMs);
-}
-
-function isJoinClosedForNewTeams(lobbyData, quizRounds, now) {
-  const secondRound = getSecondQuizRound(quizRounds);
-
-  if (!secondRound) return false;
-  if (isEmergencyJoinWindowActive(lobbyData, now)) return false;
-
-  return Boolean(
-    lobbyData?.activeRoundId === secondRound.id ||
-      lobbyData?.unlockedRounds?.[secondRound.id],
-  );
-}
 
 function canManageManagerRecords(activeManager, managers) {
   if (!activeManager) return false;
@@ -2349,20 +2323,6 @@ function App() {
           return;
         }
 
-        if (
-          !existing.exists() &&
-          isJoinClosedForNewTeams(
-            joinLobbyData,
-            selectedPubQuiz.rounds?.length ? selectedPubQuiz.rounds : defaultQuizRounds,
-            now,
-          )
-        ) {
-          setMessage(
-            "Die Anmeldung ist seit Runde 2 geschlossen. Fragt das Personal nach einer Not-Anmeldung.",
-          );
-          return;
-        }
-
         let assignedPassword = "";
         const savedPassword = normalizeRankingPassword(teamProfile?.rankingPassword || "");
 
@@ -2525,19 +2485,6 @@ function App() {
         return;
       }
 
-      if (
-        isJoinClosedForNewTeams(
-          joinLobbyData,
-          selectedPubQuiz.rounds?.length ? selectedPubQuiz.rounds : defaultQuizRounds,
-          now,
-        )
-      ) {
-        setMessage(
-          "Die Anmeldung ist seit Runde 2 geschlossen. Fragt das Personal nach einer Not-Anmeldung.",
-        );
-        return;
-      }
-
       if (teamProfileSnapshot.exists()) {
         await setDoc(
           teamProfileRef,
@@ -2619,23 +2566,6 @@ function App() {
     const rankingPassword = rankingOptIn ? createRankingPassword() : "";
 
     try {
-      const lobbySnapshot = await getDoc(getEventRef(cleanedCode));
-      const joinLobbyData = lobbySnapshot.exists() ? lobbySnapshot.data() : null;
-
-      if (
-        isJoinClosedForNewTeams(
-          joinLobbyData,
-          activePubQuiz?.rounds?.length ? activePubQuiz.rounds : defaultQuizRounds,
-          now,
-        )
-      ) {
-        setPendingTeamCreate(null);
-        setMessage(
-          "Die Anmeldung ist seit Runde 2 geschlossen. Fragt das Personal nach einer Not-Anmeldung.",
-        );
-        return;
-      }
-
       await saveTeamSession({
         cleanedCode,
         cleanedName,
@@ -2995,38 +2925,6 @@ function App() {
     } catch (error) {
       console.error("ROUND EXTRA TIME ERROR:", error);
       setQuizManagerMessage(`Zusatzzeit konnte nicht vergeben werden: ${error.message}`);
-      return false;
-    }
-  }
-
-  async function openEmergencyJoinWindow() {
-    if (!isAdmin || !sessionData?.lobbyCode) return false;
-
-    try {
-      const lobbyRef = getEventRef(sessionData.lobbyCode);
-      const reopenUntil = new Date(Date.now() + EMERGENCY_JOIN_WINDOW_MS);
-
-      await setDoc(
-        lobbyRef,
-        {
-          quizId: latestQuizId,
-          lobbyCode: sessionData.lobbyCode,
-          emergencyJoinWindowEndsAt: reopenUntil,
-          emergencyJoinAnnouncement: {
-            message:
-              "Sorry, wir hatten einen Fehler. Die Anmeldung ist noch einmal kurz offen.",
-            updatedAt: serverTimestamp(),
-          },
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
-
-      setQuizManagerMessage("Not-Anmeldung ist jetzt fuer 5 Minuten offen.");
-      return true;
-    } catch (error) {
-      console.error("EMERGENCY JOIN WINDOW ERROR:", error);
-      setQuizManagerMessage(`Not-Anmeldung konnte nicht geoeffnet werden: ${error.message}`);
       return false;
     }
   }
@@ -3637,12 +3535,10 @@ function App() {
         lobbyData={lobbyData}
         now={now}
         onAddRoundExtraTime={addRoundExtraTime}
-        onOpenEmergencyJoinWindow={openEmergencyJoinWindow}
         onOpenAdmin={() => setAppView("admin")}
         onOpenMain={() => setAppView("main")}
         onOpenFaq={() => setAppView("faq")}
         onOpenRanking={() => setAppView("ranking")}
-        onOpenVouchers={() => setAppView("vouchers")}
         onLoadPubQuizByCode={loadPubQuizByCode}
         onRevealRoundAnswers={revealRoundAnswers}
         onSaveManager={saveManager}
@@ -5392,7 +5288,6 @@ function AdminScreen({
   managers,
   now,
   onAddRoundExtraTime,
-  onOpenEmergencyJoinWindow,
   onOpenAdmin,
   onOpenFaq,
   onOpenMain,
@@ -5509,15 +5404,10 @@ function AdminScreen({
 
         {personalTab === "live" ? (
           <LiveControlPanel
-            canOpenEmergencyJoinWindow={isRoundUnlocked(
-              lobbyData,
-              getSecondQuizRound(quizRounds)?.id,
-            )}
             answersRevealed={answersRevealed}
             canRevealAnswers={canRevealAnswers}
             lobbyData={lobbyData}
             now={now}
-            onOpenEmergencyJoinWindow={onOpenEmergencyJoinWindow}
             onAddRoundExtraTime={onAddRoundExtraTime}
             onRevealRoundAnswers={onRevealRoundAnswers}
             onRoundChange={onRoundChange}
@@ -6524,12 +6414,10 @@ function ManagerDirectory({ activeManager, managers, message, onSaveManager }) {
 }
 
 function LiveControlPanel({
-  canOpenEmergencyJoinWindow,
   answersRevealed,
   canRevealAnswers,
   lobbyData,
   now,
-  onOpenEmergencyJoinWindow,
   onAddRoundExtraTime,
   onRevealRoundAnswers,
   onRoundChange,
@@ -6544,8 +6432,6 @@ function LiveControlPanel({
   const roundUnlocked = canRevealAnswers || answersRevealed;
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
-  const emergencyJoinWindowEndsMs = getEmergencyJoinWindowEndsMs(lobbyData);
-  const emergencyJoinWindowActive = isEmergencyJoinWindowActive(lobbyData, now);
   const isNarrow = useIsNarrowScreen();
   const roundExtraMinutes = getRoundExtraMinutes(lobbyData, selectedRound.id);
   const extraTimeLimitReached = roundExtraMinutes >= 30;
@@ -6624,19 +6510,6 @@ function LiveControlPanel({
             Zusatzzeit fuer diese Runde:{" "}
             <strong>{roundExtraMinutes} / 30 Minuten</strong>
           </p>
-          {canOpenEmergencyJoinWindow && (
-            <p style={{ color: emergencyJoinWindowActive ? "#86efac" : "#94a3b8" }}>
-              Anmeldung:{" "}
-              {emergencyJoinWindowActive && emergencyJoinWindowEndsMs
-                ? `Not-Anmeldung offen bis ${new Date(
-                    emergencyJoinWindowEndsMs,
-                  ).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}`
-                : "seit Runde 2 geschlossen"}
-            </p>
-          )}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button onClick={() => onUnlockRound(selectedRound.id)}>
               Runde freischalten
@@ -6669,20 +6542,6 @@ function LiveControlPanel({
             >
               Antworten freischalten
             </button>
-            {canOpenEmergencyJoinWindow && (
-              <button
-                onClick={onOpenEmergencyJoinWindow}
-                style={{
-                  background: "transparent",
-                  border: "1px dashed #334155",
-                  color: emergencyJoinWindowActive ? "#86efac" : "#94a3b8",
-                  fontSize: 13,
-                  padding: "8px 10px",
-                }}
-              >
-                Not-Anmeldung
-              </button>
-            )}
           </div>
           {!canRevealAnswers && !answersRevealed && (
             <p style={{ marginBottom: 0, color: "#94a3b8" }}>

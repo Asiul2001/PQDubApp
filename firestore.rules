@@ -14,6 +14,8 @@ service cloud.firestore {
         "activeRoundId",
         "answerWindowEndsAt",
         "answerWindowStartedAt",
+        "emergencyJoinAnnouncement",
+        "emergencyJoinWindowEndsAt",
         "startedAt",
         "closedAt",
         "roundExtraMinutes",
@@ -39,8 +41,10 @@ service cloud.firestore {
       && (!("status" in request.resource.data) || request.resource.data.status is string)
       && (!("answerWindowEndsAt" in request.resource.data) || request.resource.data.answerWindowEndsAt is timestamp)
       && (!("answerWindowStartedAt" in request.resource.data) || request.resource.data.answerWindowStartedAt is timestamp)
+      && (!("emergencyJoinWindowEndsAt" in request.resource.data) || request.resource.data.emergencyJoinWindowEndsAt is timestamp)
       && (!("startedAt" in request.resource.data) || request.resource.data.startedAt is timestamp)
       && (!("closedAt" in request.resource.data) || request.resource.data.closedAt is timestamp)
+      && (!("emergencyJoinAnnouncement" in request.resource.data) || request.resource.data.emergencyJoinAnnouncement is map)
       && (!("tiebreakerQuestion" in request.resource.data) || request.resource.data.tiebreakerQuestion is string)
       && (!("tiebreakerAnswer" in request.resource.data) || request.resource.data.tiebreakerAnswer is number || request.resource.data.tiebreakerAnswer == null)
       && (!("tiebreakerEstimates" in request.resource.data) || request.resource.data.tiebreakerEstimates is map)
