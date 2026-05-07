@@ -73,6 +73,7 @@ const pointMessages = [
 ];
 
 const ANSWER_WINDOW_MS = 5 * 60 * 60 * 1000;
+const HIDDEN_YEARLY_RANKING_TEAM_IDS = new Set(["asiul"]);
 
 function normalizeTeamName(name) {
   return name
@@ -105,6 +106,11 @@ function normalizeQuizCode(code) {
 
 function normalizeRankingPassword(password) {
   return password.replace(/[^a-z0-9]/gi, "").toUpperCase().slice(0, 4);
+}
+
+function isHiddenFromYearlyRanking(teamIdOrName = "") {
+  const normalized = normalizeTeamName(teamIdOrName);
+  return HIDDEN_YEARLY_RANKING_TEAM_IDS.has(normalized);
 }
 
 function getInitialQuizCode() {
@@ -4827,7 +4833,10 @@ function RankingScreen({
           sessions: row.gamesPlayed || 0,
         }))
       : aggregateYearlyRanking(allTeams || registeredTeams);
-  const rankingTeams = rankingTab === "daily" ? dailyTeams : yearlyTeams;
+  const visibleYearlyTeams = yearlyTeams.filter(
+    (team) => !isHiddenFromYearlyRanking(team.id || team.teamName),
+  );
+  const rankingTeams = rankingTab === "daily" ? dailyTeams : visibleYearlyTeams;
   const hasDailyPodiumTie = dailyRanking.tieGroups.length > 0;
   const currentTeamIsTiebreakerEligible = dailyRanking.tieGroups.some((group) =>
     group.teams.some((team) => team.id === sessionId),
