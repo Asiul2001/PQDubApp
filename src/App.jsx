@@ -212,11 +212,26 @@ function getTeammateRef(teamId, teammateId) {
   return doc(db, "teams", teamId, "teammates", teammateId);
 }
 
-function getRoundStartMs(lobbyData, roundId) {
+function getManualRoundStartMs(lobbyData, roundId) {
   const startedAt = lobbyData?.roundStarts?.[roundId];
   const startedAtMs = getTimestampMs(startedAt);
 
   return startedAtMs || null;
+}
+
+function getEffectiveRoundStartMs(sessionData, lobbyData, roundId, now = Date.now()) {
+  const manualStartMs = getManualRoundStartMs(sessionData, roundId);
+
+  if (manualStartMs !== null) return manualStartMs;
+
+  const unlockMs = getRoundUnlockMs(lobbyData, roundId);
+  const autoStartMs = unlockMs ? unlockMs + ROUND_START_WINDOW_MS : null;
+
+  if (autoStartMs && now >= autoStartMs) {
+    return autoStartMs;
+  }
+
+  return null;
 }
 
 function getRoundExtraMinutes(lobbyData, roundId) {
@@ -456,7 +471,7 @@ function formatStopwatch(ms) {
 }
 
 function isRoundFinished(team, round, now, lobbyData) {
-  const startMs = getRoundStartMs(team, round.id);
+  const startMs = getEffectiveRoundStartMs(team, lobbyData, round.id, now);
 
   if (startMs === null) return false;
 
@@ -3072,15 +3087,12 @@ function App() {
         effectiveSessionData.lobbyCode,
         effectiveSessionId,
       );
-      const roundUnlockMs = getRoundUnlockMs(lobbyData, roundId);
-      const alreadyStarted = Boolean(getRoundStartMs(effectiveSessionData, roundId));
+      const alreadyStarted = Boolean(
+        getEffectiveRoundStartMs(effectiveSessionData, lobbyData, roundId, Date.now()),
+      );
 
-      if (
-        roundUnlockMs &&
-        !alreadyStarted &&
-        Date.now() > roundUnlockMs + ROUND_START_WINDOW_MS
-      ) {
-        setMessage("Das 10-Minuten-Startfenster fuer diese Runde ist abgelaufen.");
+      if (alreadyStarted) {
+        setMessage("Der Timer fuer diese Runde laeuft bereits.");
         return;
       }
 
@@ -3212,8 +3224,8 @@ function App() {
         return { ok: false, message: "Team-Session nicht gefunden." };
       }
 
-      const currentSession = sessionSnapshot.data();
-      const previousPoints = Number(currentSession.totalPoints) || 0;
+        const currentSession = sessionSnapshot.data();
+        const previousPoints = Number(currentSession.totalPoints) || 0;
 
       await setDoc(
         sessionRef,
@@ -5640,7 +5652,7 @@ function AdminScreen({
   const roundUnlocked = isRoundUnlocked(lobbyData, selectedRound.id);
   const answersRevealed = isRoundAnswersRevealed(lobbyData, selectedRound.id);
   const teamStatuses = registeredTeams.map((team) => {
-    const startMs = getRoundStartMs(team, selectedRound.id);
+    const startMs = getEffectiveRoundStartMs(team, lobbyData, selectedRound.id, now);
     const durationMs = getRoundDurationMs(selectedRound, lobbyData);
     const remainingMs = startMs === null ? null : startMs + durationMs - now;
     const expired = startMs !== null && remainingMs <= 0;
@@ -8277,14 +8289,15 @@ function QuizScreen({
   const remainingHints = Math.max(0, hintBudget - usedHints);
   const roundUnlocked = isRoundUnlocked(lobbyData, activeRound.id);
   const roundUnlockMs = getRoundUnlockMs(lobbyData, activeRound.id);
-  const roundStartMs = getRoundStartMs(sessionData, activeRound.id);
+  const roundStartMs = getEffectiveRoundStartMs(sessionData, lobbyData, activeRound.id, now);
   const roundDurationMs = getRoundDurationMs(activeRound, lobbyData);
   const remainingRoundMs =
     roundStartMs === null ? null : roundStartMs + roundDurationMs - now;
   const roundHasStarted = roundStartMs !== null;
   const roundExpired = roundHasStarted && remainingRoundMs <= 0;
   const roundStartWindowExpired =
-    Boolean(roundUnlockMs) && !roundHasStarted && now > roundUnlockMs + ROUND_START_WINDOW_MS;
+    Boolean(roundUnlockMs) && !getManualRoundStartMs(sessionData, activeRound.id) && roundHasStarted;
+  const autoStartMs = roundUnlockMs ? roundUnlockMs + ROUND_START_WINDOW_MS : null;
   const roundExtraMinutes = getRoundExtraMinutes(lobbyData, activeRound.id);
   const roundExtraAnnouncement = lobbyData?.roundExtraAnnouncements?.[activeRound.id];
   const answersRevealed = isRoundAnswersRevealed(lobbyData, activeRound.id);
@@ -8577,21 +8590,27 @@ function QuizScreen({
               seid.
             </p>
             <p style={{ color: roundStartWindowExpired ? "#fca5a5" : "#94a3b8" }}>
-              Startfenster: 10 Minuten nach Freischaltung.
+              {autoStartMs
+                ? `Wenn ihr nicht selbst startet, beginnt der Timer automatisch um ${new Date(
+                    autoStartMs,
+                  ).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}.`
+                : "Wenn ihr nicht selbst startet, beginnt der Timer 10 Minuten nach Freischaltung automatisch."}
             </p>
             <button
-              disabled={roundStartWindowExpired}
               onClick={() => onStartTeamRound(activeRound.id)}
               style={{
                 minHeight: 48,
                 padding: "12px 18px",
                 borderRadius: 12,
-                border: `1px solid ${roundStartWindowExpired ? "#334155" : "#38bdf8"}`,
-                background: roundStartWindowExpired ? "#1e293b" : "#0ea5e9",
-                color: roundStartWindowExpired ? "#94a3b8" : "#020617",
+                border: "1px solid #38bdf8",
+                background: "#0ea5e9",
+                color: "#020617",
                 fontSize: 18,
                 fontWeight: 800,
-                cursor: roundStartWindowExpired ? "not-allowed" : "pointer",
+                cursor: "pointer",
               }}
             >
               Timer für unser Team starten
