@@ -444,17 +444,104 @@ function isRoundFinished(team, round, now, lobbyData) {
   });
 }
 
+function getSessionDateKey(session) {
+  const ms = getTimestampMs(getCompletionValue(session));
+
+  if (!ms) return "unknown-date";
+
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+function getParticipationKey(session) {
+  const teamKey =
+    session?.teamNameNormalized ||
+    session?.teamId ||
+    session?.id ||
+    normalizeTeamName(session?.teamName || "");
+  const codeKey = session?.quizCode || session?.lobbyCode || "unknown-code";
+
+  return `${teamKey}__${codeKey}__${getSessionDateKey(session)}`;
+}
+
+function mergeSessionParticipation(sessions = []) {
+  const grouped = new Map();
+
+  sessions.forEach((session) => {
+    const key = getParticipationKey(session);
+    const current = grouped.get(key);
+
+    if (!current) {
+      grouped.set(key, {
+        ...session,
+        playerNames: Array.from(new Set((session.playerNames || []).filter(Boolean))),
+        normalizedPlayerNames: Array.from(
+          new Set((session.normalizedPlayerNames || []).filter(Boolean)),
+        ),
+      });
+      return;
+    }
+
+    const currentMs = getTimestampMs(getCompletionValue(current));
+    const sessionMs = getTimestampMs(getCompletionValue(session));
+    const preferred = sessionMs >= currentMs ? session : current;
+
+    grouped.set(key, {
+      ...current,
+      ...preferred,
+      playerNames: Array.from(
+        new Set([
+          ...(current.playerNames || []),
+          ...(session.playerNames || []),
+          current.playerName,
+          session.playerName,
+        ].filter(Boolean)),
+      ),
+      normalizedPlayerNames: Array.from(
+        new Set([
+          ...(current.normalizedPlayerNames || []),
+          ...(session.normalizedPlayerNames || []),
+          normalizePersonName(current.playerName || ""),
+          normalizePersonName(session.playerName || ""),
+        ].filter(Boolean)),
+      ),
+      totalPoints: Math.max(Number(current.totalPoints) || 0, Number(session.totalPoints) || 0),
+      podiumBonusPoints: Math.max(
+        Number(current.podiumBonusPoints) || 0,
+        Number(session.podiumBonusPoints) || 0,
+      ),
+      finalDailyPointsForGlobal: Math.max(
+        Number(current.finalDailyPointsForGlobal) || 0,
+        Number(session.finalDailyPointsForGlobal) || 0,
+      ),
+      rankDaily:
+        [Number(current.rankDaily) || 0, Number(session.rankDaily) || 0]
+          .filter((value) => value > 0)
+          .sort((a, b) => a - b)[0] || undefined,
+      scoreAdjustment: session.scoreAdjustment?.active
+        ? session.scoreAdjustment
+        : current.scoreAdjustment,
+    });
+  });
+
+  return Array.from(grouped.values()).sort((a, b) => {
+    const timeDifference =
+      getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a));
+    return timeDifference || (a.teamName || "").localeCompare(b.teamName || "");
+  });
+}
+
 function aggregateYearlyRanking(teams) {
+  const mergedTeams = mergeSessionParticipation(teams);
   const groupedTeams = new Map();
   const lobbyGroups = new Map();
   const rankingTeamKeys = new Set();
 
-  teams.forEach((team) => {
+  mergedTeams.forEach((team) => {
     const key = team.teamNameNormalized || normalizeTeamName(team.teamName || "");
     if (team.rankingOptIn && key) rankingTeamKeys.add(key);
   });
 
-  teams
+  mergedTeams
     .filter((team) =>
       rankingTeamKeys.has(team.teamNameNormalized || normalizeTeamName(team.teamName || "")),
     )
@@ -622,6 +709,7 @@ function aggregateTeamDirectory(teams, teamProfiles = []) {
       teamProfile,
     ]),
   );
+  const mergedSessions = mergeSessionParticipation(teams);
 
   teamProfiles.forEach((teamProfile) => {
     const key =
@@ -648,7 +736,7 @@ function aggregateTeamDirectory(teams, teamProfiles = []) {
     });
   });
 
-  teams.forEach((team) => {
+  mergedSessions.forEach((team) => {
     const key = team.teamNameNormalized || normalizeTeamName(team.teamName || "");
     if (!key) return;
     const profile = profileMap.get(key);
@@ -707,7 +795,10 @@ function getAnsweredQuestionCount(team, questionIds = []) {
 
 function getQuizLabelForSession(session, pubQuizzes = []) {
   const matchingQuiz = pubQuizzes.find(
-    (quiz) => quiz.id === session?.quizId || quiz.quizCode === session?.quizCode,
+    (quiz) =>
+      quiz.quizCode === session?.quizCode ||
+      quiz.quizCode === session?.lobbyCode ||
+      (session?.quizId && session.quizId !== latestQuizId && quiz.id === session.quizId),
   );
 
   return matchingQuiz?.title || session?.quizCode || session?.lobbyCode || "Pubquiz";
@@ -1702,7 +1793,15 @@ function App() {
 
         const sessions = sessionSnapshots
           .filter((snapshot) => snapshot.exists())
-          .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }))
+          .map((snapshot) => {
+            const data = snapshot.data();
+
+            return {
+              id: snapshot.id,
+              sessionKey: `${data.eventId || "event"}__${snapshot.id}`,
+              ...data,
+            };
+          })
           .sort((a, b) => {
             const timeDifference =
               getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a));
@@ -1778,7 +1877,15 @@ function App() {
 
         const sessions = sessionSnapshots
           .flatMap((snapshot) =>
-            snapshot.docs.map((teamDoc) => ({ id: teamDoc.id, ...teamDoc.data() })),
+            snapshot.docs.map((teamDoc) => {
+              const data = teamDoc.data();
+
+              return {
+                id: teamDoc.id,
+                sessionKey: `${data.eventId || "event"}__${teamDoc.id}`,
+                ...data,
+              };
+            }),
           )
           .sort((a, b) => {
             const timeDifference =
@@ -5792,7 +5899,7 @@ function TeamDirectory({
     pubQuizzes,
   );
   const selectedSession =
-    selectedSessions.find((session) => session.id === selectedSessionId) ||
+    selectedSessions.find((session) => session.sessionKey === selectedSessionId) ||
     selectedSessions[0];
   const selectedPubQuiz = pubQuizzes.find(
     (pubQuiz) =>
@@ -6078,8 +6185,12 @@ function TeamDirectory({
 
                   return (
                     <button
-                      key={session.id}
-                      onClick={() => setSelectedSessionId(session.id)}
+                      key={session.sessionKey || `${session.eventId || "event"}__${session.id}`}
+                      onClick={() =>
+                        setSelectedSessionId(
+                          session.sessionKey || `${session.eventId || "event"}__${session.id}`,
+                        )
+                      }
                       style={{
                         display: "grid",
                         gridTemplateColumns: isNarrow ? "1fr" : "1fr auto",
