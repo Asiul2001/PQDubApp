@@ -73,6 +73,8 @@ const pointMessages = [
 ];
 
 const ANSWER_WINDOW_MS = 5 * 60 * 60 * 1000;
+const ROUND_START_WINDOW_MS = 10 * 60 * 1000;
+const EMERGENCY_JOIN_WINDOW_MS = 5 * 60 * 1000;
 const HIDDEN_YEARLY_RANKING_TEAM_IDS = new Set(["asiul"]);
 
 function normalizeTeamName(name) {
@@ -228,6 +230,24 @@ function getRoundDurationMs(round, lobbyData) {
   const extraDurationMs = getRoundExtraMinutes(lobbyData, round?.id) * 60 * 1000;
 
   return baseDurationMs + extraDurationMs;
+}
+
+function getEmergencyJoinWindowEndsMs(lobbyData) {
+  return getTimestampMs(lobbyData?.emergencyJoinWindowEndsAt);
+}
+
+function isEmergencyJoinWindowActive(lobbyData, now = Date.now()) {
+  const endsAtMs = getEmergencyJoinWindowEndsMs(lobbyData);
+  return Boolean(endsAtMs && endsAtMs > now);
+}
+
+function isNewTeamJoinClosed(lobbyData, now = Date.now()) {
+  const closedAtMs = getTimestampMs(lobbyData?.closedAt);
+  return Boolean(closedAtMs && !isEmergencyJoinWindowActive(lobbyData, now));
+}
+
+function getRoundUnlockMs(lobbyData, roundId) {
+  return getTimestampMs(lobbyData?.roundStarts?.[roundId]);
 }
 
 function isRoundUnlocked(lobbyData, roundId) {
@@ -2455,6 +2475,7 @@ function App() {
         ? teamProfileSnapshot.data()
         : null;
       const existing = await getDoc(sessionRef);
+      const isClosedForNewTeams = isNewTeamJoinClosed(joinLobbyData, now);
       const teamProfileRankingOptIn = Boolean(
         teamProfile?.yearlyRankingOptIn ?? teamProfile?.rankingOptIn,
       );
@@ -2546,6 +2567,11 @@ function App() {
           return;
         }
 
+        if (isClosedForNewTeams) {
+          setMessage("Neue Teams koennen gerade nicht mehr beitreten. Nur Teams, die schon in dieser Lobby waren.");
+          return;
+        }
+
         await saveTeamSession({
           cleanedCode,
           cleanedName,
@@ -2633,6 +2659,11 @@ function App() {
         return;
       }
 
+      if (isClosedForNewTeams) {
+        setMessage("Neue Teams koennen gerade nicht mehr beitreten. Nur Teams, die schon in dieser Lobby waren.");
+        return;
+      }
+
       if (teamProfileSnapshot.exists()) {
         await setDoc(
           teamProfileRef,
@@ -2714,6 +2745,15 @@ function App() {
     const rankingPassword = rankingOptIn ? createRankingPassword() : "";
 
     try {
+      const lobbySnapshot = await getDoc(getEventRef(cleanedCode));
+      const lobbyForJoin = lobbySnapshot.exists() ? lobbySnapshot.data() : null;
+
+      if (isNewTeamJoinClosed(lobbyForJoin, now)) {
+        setMessage("Neue Teams koennen gerade nicht mehr beitreten.");
+        setPendingTeamCreate(null);
+        return;
+      }
+
       await saveTeamSession({
         cleanedCode,
         cleanedName,
@@ -2893,6 +2933,9 @@ function App() {
           quizId: latestQuizId,
           lobbyCode: sessionData.lobbyCode,
           activeRoundId: roundId,
+          roundStarts: {
+            [roundId]: serverTimestamp(),
+          },
           unlockedRounds: {
             [roundId]: true,
           },
@@ -2903,6 +2946,61 @@ function App() {
       setActiveRoundId(roundId);
     } catch (error) {
       console.error("ROUND UNLOCK ERROR:", error);
+    }
+  }
+
+  async function closeNewRegistrations() {
+    if (!isAdmin || !sessionData?.lobbyCode) return false;
+
+    try {
+      await setDoc(
+        getEventRef(sessionData.lobbyCode),
+        {
+          quizId: latestQuizId,
+          lobbyCode: sessionData.lobbyCode,
+          closedAt: serverTimestamp(),
+          emergencyJoinAnnouncement: {
+            active: false,
+            message: "",
+          },
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+      setQuizManagerMessage("Neue Teams sind jetzt gesperrt. Bereits vorhandene Teams koennen weiter rein.");
+      return true;
+    } catch (error) {
+      console.error("REGISTRATION CLOSE ERROR:", error);
+      setQuizManagerMessage?.(`Neue Anmeldungen konnten nicht gesperrt werden: ${error.message}`);
+      return false;
+    }
+  }
+
+  async function reopenNewRegistrationsForFiveMinutes() {
+    if (!isAdmin || !sessionData?.lobbyCode) return false;
+
+    try {
+      await setDoc(
+        getEventRef(sessionData.lobbyCode),
+        {
+          quizId: latestQuizId,
+          lobbyCode: sessionData.lobbyCode,
+          closedAt: serverTimestamp(),
+          emergencyJoinWindowEndsAt: new Date(Date.now() + EMERGENCY_JOIN_WINDOW_MS),
+          emergencyJoinAnnouncement: {
+            active: true,
+            message: "Neue Anmeldung ist fuer 5 Minuten wieder offen.",
+          },
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+      setQuizManagerMessage("Neue Anmeldung fuer 5 Minuten wieder geoeffnet.");
+      return true;
+    } catch (error) {
+      console.error("REGISTRATION REOPEN ERROR:", error);
+      setQuizManagerMessage?.(`Not-Anmeldung konnte nicht geoeffnet werden: ${error.message}`);
+      return false;
     }
   }
 
@@ -2974,6 +3072,18 @@ function App() {
         effectiveSessionData.lobbyCode,
         effectiveSessionId,
       );
+      const roundUnlockMs = getRoundUnlockMs(lobbyData, roundId);
+      const alreadyStarted = Boolean(getRoundStartMs(effectiveSessionData, roundId));
+
+      if (
+        roundUnlockMs &&
+        !alreadyStarted &&
+        Date.now() > roundUnlockMs + ROUND_START_WINDOW_MS
+      ) {
+        setMessage("Das 10-Minuten-Startfenster fuer diese Runde ist abgelaufen.");
+        return;
+      }
+
       const startedAt = new Date();
       setMessage("");
 
@@ -3738,12 +3848,14 @@ function App() {
         lobbyData={lobbyData}
         now={now}
         onAddRoundExtraTime={addRoundExtraTime}
+        onCloseNewRegistrations={closeNewRegistrations}
         onOpenAdmin={() => setAppView("admin")}
         onOpenMain={() => setAppView("main")}
         onOpenFaq={() => setAppView("faq")}
         onOpenRanking={() => setAppView("ranking")}
         onLoadPubQuizByCode={loadPubQuizByCode}
         onRevealRoundAnswers={revealRoundAnswers}
+        onReopenNewRegistrations={reopenNewRegistrationsForFiveMinutes}
         onSaveManager={saveManager}
         onSavePubQuiz={savePubQuiz}
         onUpdateTeamScore={updateTeamScore}
@@ -5495,6 +5607,7 @@ function AdminScreen({
   managers,
   now,
   onAddRoundExtraTime,
+  onCloseNewRegistrations,
   onOpenAdmin,
   onOpenFaq,
   onOpenMain,
@@ -5502,6 +5615,7 @@ function AdminScreen({
   onOpenVouchers,
   onLoadPubQuizByCode,
   onRevealRoundAnswers,
+  onReopenNewRegistrations,
   onSaveManager,
   onSavePubQuiz,
   onRoundChange,
@@ -5618,7 +5732,9 @@ function AdminScreen({
             lobbyData={lobbyData}
             now={now}
             onAddRoundExtraTime={onAddRoundExtraTime}
+            onCloseNewRegistrations={onCloseNewRegistrations}
             onRevealRoundAnswers={onRevealRoundAnswers}
+            onReopenNewRegistrations={onReopenNewRegistrations}
             onRoundChange={onRoundChange}
             onUpdateTeamScore={onUpdateTeamScore}
             onUnlockRound={onUnlockRound}
@@ -6667,7 +6783,9 @@ function LiveControlPanel({
   lobbyData,
   now,
   onAddRoundExtraTime,
+  onCloseNewRegistrations,
   onRevealRoundAnswers,
+  onReopenNewRegistrations,
   onRoundChange,
   onUpdateTeamScore,
   onUnlockRound,
@@ -6686,7 +6804,13 @@ function LiveControlPanel({
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
   const isNarrow = useIsNarrowScreen();
   const roundExtraMinutes = getRoundExtraMinutes(lobbyData, selectedRound.id);
+  const roundUnlockMs = getRoundUnlockMs(lobbyData, selectedRound.id);
+  const roundStartWindowExpired =
+    Boolean(roundUnlockMs) && now > roundUnlockMs + ROUND_START_WINDOW_MS;
   const extraTimeLimitReached = roundExtraMinutes >= 30;
+  const registrationClosed = isNewTeamJoinClosed(lobbyData, now);
+  const emergencyJoinWindowEndsMs = getEmergencyJoinWindowEndsMs(lobbyData);
+  const emergencyJoinOpen = isEmergencyJoinWindowActive(lobbyData, now);
   const normalizedTeamSearch = normalizeTeamName(teamSearch || "");
   const visibleTeamStatuses = teamStatuses.filter((team) => {
     if (!normalizedTeamSearch) return true;
@@ -6789,9 +6913,57 @@ function LiveControlPanel({
             Zusatzzeit fuer diese Runde:{" "}
             <strong>{roundExtraMinutes} / 30 Minuten</strong>
           </p>
+          <p style={{ color: registrationClosed ? "#fca5a5" : "#86efac" }}>
+            Neue Anmeldungen:{" "}
+            <strong>
+              {registrationClosed ? "gesperrt" : emergencyJoinOpen ? "5 Minuten offen" : "offen"}
+            </strong>
+            {emergencyJoinOpen && emergencyJoinWindowEndsMs
+              ? ` bis ${new Date(emergencyJoinWindowEndsMs).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}`
+              : ""}
+          </p>
+          <p style={{ color: roundStartWindowExpired ? "#fca5a5" : "#cbd5e1" }}>
+            Startfenster fuer Teams:{" "}
+            <strong>
+              {roundUnlockMs
+                ? roundStartWindowExpired
+                  ? "abgelaufen"
+                  : "10 Minuten nach Freischaltung"
+                : "startet mit der Freischaltung"}
+            </strong>
+          </p>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button onClick={() => onUnlockRound(selectedRound.id)}>
               Runde freischalten
+            </button>
+            <button
+              onClick={onCloseNewRegistrations}
+              style={{
+                background: registrationClosed ? "#7f1d1d" : "#1e293b",
+                border: "none",
+                color: "#f8fafc",
+                fontWeight: 700,
+                padding: "8px 12px",
+                cursor: "pointer",
+              }}
+            >
+              Keine neuen Anmeldungen
+            </button>
+            <button
+              onClick={onReopenNewRegistrations}
+              style={{
+                background: "#0f766e",
+                border: "none",
+                color: "#ecfeff",
+                fontWeight: 700,
+                padding: "8px 12px",
+                cursor: "pointer",
+              }}
+            >
+              5 Min. oeffnen
             </button>
             <button
               disabled={extraTimeLimitReached}
@@ -8104,12 +8276,15 @@ function QuizScreen({
   const usedHints = Object.values(revealedHints).filter(Boolean).length;
   const remainingHints = Math.max(0, hintBudget - usedHints);
   const roundUnlocked = isRoundUnlocked(lobbyData, activeRound.id);
+  const roundUnlockMs = getRoundUnlockMs(lobbyData, activeRound.id);
   const roundStartMs = getRoundStartMs(sessionData, activeRound.id);
   const roundDurationMs = getRoundDurationMs(activeRound, lobbyData);
   const remainingRoundMs =
     roundStartMs === null ? null : roundStartMs + roundDurationMs - now;
   const roundHasStarted = roundStartMs !== null;
   const roundExpired = roundHasStarted && remainingRoundMs <= 0;
+  const roundStartWindowExpired =
+    Boolean(roundUnlockMs) && !roundHasStarted && now > roundUnlockMs + ROUND_START_WINDOW_MS;
   const roundExtraMinutes = getRoundExtraMinutes(lobbyData, activeRound.id);
   const roundExtraAnnouncement = lobbyData?.roundExtraAnnouncements?.[activeRound.id];
   const answersRevealed = isRoundAnswersRevealed(lobbyData, activeRound.id);
@@ -8401,18 +8576,22 @@ function QuizScreen({
               Die Runde ist freigeschaltet. Startet euren Timer, wenn ihr bereit
               seid.
             </p>
+            <p style={{ color: roundStartWindowExpired ? "#fca5a5" : "#94a3b8" }}>
+              Startfenster: 10 Minuten nach Freischaltung.
+            </p>
             <button
+              disabled={roundStartWindowExpired}
               onClick={() => onStartTeamRound(activeRound.id)}
               style={{
                 minHeight: 48,
                 padding: "12px 18px",
                 borderRadius: 12,
-                border: "1px solid #38bdf8",
-                background: "#0ea5e9",
-                color: "#020617",
+                border: `1px solid ${roundStartWindowExpired ? "#334155" : "#38bdf8"}`,
+                background: roundStartWindowExpired ? "#1e293b" : "#0ea5e9",
+                color: roundStartWindowExpired ? "#94a3b8" : "#020617",
                 fontSize: 18,
                 fontWeight: 800,
-                cursor: "pointer",
+                cursor: roundStartWindowExpired ? "not-allowed" : "pointer",
               }}
             >
               Timer für unser Team starten
