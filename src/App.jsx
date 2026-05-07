@@ -458,9 +458,8 @@ function getParticipationKey(session) {
     session?.teamId ||
     session?.id ||
     normalizeTeamName(session?.teamName || "");
-  const codeKey = session?.quizCode || session?.lobbyCode || "unknown-code";
 
-  return `${teamKey}__${codeKey}__${getSessionDateKey(session)}`;
+  return `${teamKey}__${getSessionDateKey(session)}`;
 }
 
 function mergeSessionParticipation(sessions = []) {
@@ -481,9 +480,18 @@ function mergeSessionParticipation(sessions = []) {
       return;
     }
 
+    const currentPoints = Number(current.totalPoints) || 0;
+    const sessionPoints = Number(session.totalPoints) || 0;
     const currentMs = getTimestampMs(getCompletionValue(current));
     const sessionMs = getTimestampMs(getCompletionValue(session));
-    const preferred = sessionMs >= currentMs ? session : current;
+    const preferred =
+      sessionPoints > currentPoints
+        ? session
+        : sessionPoints < currentPoints
+          ? current
+          : sessionMs >= currentMs
+            ? session
+            : current;
 
     grouped.set(key, {
       ...current,
