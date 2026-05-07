@@ -81,6 +81,7 @@ service cloud.firestore {
         "completedAt",
         "updatedAt",
         "lastSeenAt",
+        "scoreAdjustment",
         "answers",
         "hints",
         "roundStarts",
@@ -96,6 +97,7 @@ service cloud.firestore {
       && request.resource.data.playerName is string
       && (!("playerNames" in request.resource.data) || request.resource.data.playerNames is list)
       && (!("normalizedPlayerNames" in request.resource.data) || request.resource.data.normalizedPlayerNames is list)
+      && (!("scoreAdjustment" in request.resource.data) || request.resource.data.scoreAdjustment is map)
       && request.resource.data.rankingOptIn is bool
       && request.resource.data.totalPoints is number;
     }

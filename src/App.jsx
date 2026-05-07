@@ -326,6 +326,14 @@ function createSessionRecord({
   };
 }
 
+function getRoundPublicTitle(round, roundIndex, lobbyData) {
+  if (!round) return `Runde ${roundIndex + 1}`;
+
+  return isRoundUnlocked(lobbyData, round.id)
+    ? getRoundDisplayTitle(round, roundIndex)
+    : `Runde ${roundIndex + 1}`;
+}
+
 function createTeamRecord({ cleanedName, normalized, rankingOptIn }) {
   return {
     id: normalized,
@@ -2948,6 +2956,61 @@ function App() {
     }
   }
 
+  async function updateTeamScore({
+    nextTotalPoints,
+    note,
+    teamId,
+    teamName,
+  }) {
+    if (!activeManager?.headManager || !sessionData?.lobbyCode || !teamId) {
+      return { ok: false, message: "Nur der Head Manager darf Punkte korrigieren." };
+    }
+
+    const parsedPoints = Number(nextTotalPoints);
+
+    if (!Number.isFinite(parsedPoints) || parsedPoints < 0) {
+      return { ok: false, message: "Bitte eine gueltige Punktzahl eingeben." };
+    }
+
+    const sessionRef = getTeamSessionRef(sessionData.lobbyCode, teamId);
+
+    try {
+      const sessionSnapshot = await getDoc(sessionRef);
+
+      if (!sessionSnapshot.exists()) {
+        return { ok: false, message: "Team-Session nicht gefunden." };
+      }
+
+      const currentSession = sessionSnapshot.data();
+      const previousPoints = Number(currentSession.totalPoints) || 0;
+
+      await setDoc(
+        sessionRef,
+        {
+          totalPoints: parsedPoints,
+          scoreAdjustment: {
+            active: parsedPoints !== previousPoints || Boolean(note?.trim()),
+            adjustedAt: serverTimestamp(),
+            adjustedBy: activeManager.name || activeManager.id || "Head Manager",
+            adjustedById: activeManager.id || activeManager.key || "",
+            note: note?.trim() || "",
+            previousPoints,
+          },
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      return {
+        ok: true,
+        message: `Punktestand fuer ${teamName || currentSession.teamName || teamId} gespeichert.`,
+      };
+    } catch (error) {
+      console.error("TEAM SCORE UPDATE ERROR:", error);
+      return { ok: false, message: `Punkte konnten nicht gespeichert werden: ${error.message}` };
+    }
+  }
+
   async function savePubQuiz(draft) {
     if (!isAdmin) return;
 
@@ -3562,6 +3625,7 @@ function App() {
         onRevealRoundAnswers={revealRoundAnswers}
         onSaveManager={saveManager}
         onSavePubQuiz={savePubQuiz}
+        onUpdateTeamScore={updateTeamScore}
         onStartTiebreaker={startTiebreaker}
         onRoundChange={setActiveRoundId}
         onUnlockRound={unlockRound}
@@ -5317,6 +5381,7 @@ function AdminScreen({
   onSaveManager,
   onSavePubQuiz,
   onRoundChange,
+  onUpdateTeamScore,
   onUnlockRound,
   onUpdateVoucherStatus,
   pubQuizzes,
@@ -5423,6 +5488,7 @@ function AdminScreen({
 
         {personalTab === "live" ? (
           <LiveControlPanel
+            activeManager={activeManager}
             answersRevealed={answersRevealed}
             canRevealAnswers={canRevealAnswers}
             lobbyData={lobbyData}
@@ -5430,6 +5496,7 @@ function AdminScreen({
             onAddRoundExtraTime={onAddRoundExtraTime}
             onRevealRoundAnswers={onRevealRoundAnswers}
             onRoundChange={onRoundChange}
+            onUpdateTeamScore={onUpdateTeamScore}
             onUnlockRound={onUnlockRound}
             quizRounds={quizRounds}
             selectedQuestions={selectedQuestions}
@@ -6089,6 +6156,11 @@ function TeamDirectory({
                   >
                     <strong style={{ display: "block", marginBottom: 6 }}>Punkte</strong>
                     <span style={{ color: "#cbd5e1" }}>{selectedSession.totalPoints || 0}</span>
+                    {selectedSession.scoreAdjustment?.active && (
+                      <span style={{ display: "block", marginTop: 6, color: "#fbbf24", fontWeight: 700 }}>
+                        manuell geaendert
+                      </span>
+                    )}
                   </div>
                   <div
                     style={{
@@ -6124,6 +6196,34 @@ function TeamDirectory({
                     </span>
                   </div>
                 </div>
+
+                {selectedSession.scoreAdjustment?.active && (
+                  <div
+                    style={{
+                      marginBottom: 16,
+                      padding: 12,
+                      border: "1px solid #92400e",
+                      borderRadius: 10,
+                      background: "#1c1917",
+                      color: "#fde68a",
+                    }}
+                  >
+                    <strong style={{ display: "block", marginBottom: 4 }}>
+                      Punkte wurden manuell angepasst
+                    </strong>
+                    <span>
+                      Von {selectedSession.scoreAdjustment.adjustedBy || "Manager"}
+                      {selectedSession.scoreAdjustment.previousPoints !== undefined
+                        ? ` (${selectedSession.scoreAdjustment.previousPoints} -> ${selectedSession.totalPoints || 0})`
+                        : ""}
+                    </span>
+                    {selectedSession.scoreAdjustment.note && (
+                      <span style={{ display: "block", marginTop: 6 }}>
+                        Notiz: {selectedSession.scoreAdjustment.note}
+                      </span>
+                    )}
+                  </div>
+                )}
 
                 {(selectedPubQuiz?.tiebreakerQuestion ||
                   Number.isFinite(Number(selectedPubQuiz?.tiebreakerAnswer))) && (
@@ -6433,6 +6533,7 @@ function ManagerDirectory({ activeManager, managers, message, onSaveManager }) {
 }
 
 function LiveControlPanel({
+  activeManager,
   answersRevealed,
   canRevealAnswers,
   lobbyData,
@@ -6440,6 +6541,7 @@ function LiveControlPanel({
   onAddRoundExtraTime,
   onRevealRoundAnswers,
   onRoundChange,
+  onUpdateTeamScore,
   onUnlockRound,
   quizRounds,
   selectedQuestions,
@@ -6447,6 +6549,9 @@ function LiveControlPanel({
   teamStatuses,
 }) {
   const [selectedTeamId, setSelectedTeamId] = useState(null);
+  const [scoreDraft, setScoreDraft] = useState("");
+  const [scoreNoteDraft, setScoreNoteDraft] = useState("");
+  const [scoreMessage, setScoreMessage] = useState("");
   const [teamSearch, setTeamSearch] = useState("");
   const roundUnlocked = canRevealAnswers || answersRevealed;
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
@@ -6468,12 +6573,39 @@ function LiveControlPanel({
     visibleTeamStatuses[0] ||
     null;
   const selectedQuestionIds = selectedQuestions.map((question) => question.id);
+  const canEditScores = Boolean(activeManager?.headManager && onUpdateTeamScore);
 
   useEffect(() => {
     if (!visibleTeamStatuses.some((team) => team.id === selectedTeamId)) {
       setSelectedTeamId(visibleTeamStatuses[0]?.id || null);
     }
   }, [selectedTeamId, visibleTeamStatuses]);
+
+  useEffect(() => {
+    if (!selectedTeam) {
+      setScoreDraft("");
+      setScoreNoteDraft("");
+      setScoreMessage("");
+      return;
+    }
+
+    setScoreDraft(String(Number(selectedTeam.totalPoints) || 0));
+    setScoreNoteDraft(selectedTeam.scoreAdjustment?.note || "");
+    setScoreMessage("");
+  }, [selectedTeam?.id, selectedTeam?.totalPoints, selectedTeam?.scoreAdjustment?.note]);
+
+  async function handleScoreSave() {
+    if (!selectedTeam || !canEditScores) return;
+
+    const result = await onUpdateTeamScore({
+      nextTotalPoints: scoreDraft,
+      note: scoreNoteDraft,
+      teamId: selectedTeam.id,
+      teamName: selectedTeam.teamName,
+    });
+
+    setScoreMessage(result.message);
+  }
 
   return (
     <>
@@ -6620,12 +6752,17 @@ function LiveControlPanel({
                   >
                     <span>
                       <strong style={{ display: "block" }}>{team.teamName}</strong>
-                      <span style={{ color: "#94a3b8", fontSize: 14 }}>
-                        {answeredCount}/{selectedQuestionIds.length} Antworten in dieser Runde
-                      </span>
+                    <span style={{ color: "#94a3b8", fontSize: 14 }}>
+                      {answeredCount}/{selectedQuestionIds.length} Antworten in dieser Runde
                     </span>
-                    <span
-                      style={{
+                    {team.scoreAdjustment?.active && (
+                      <span style={{ color: "#fbbf24", fontSize: 13, fontWeight: 700 }}>
+                        Score manuell geaendert
+                      </span>
+                    )}
+                  </span>
+                  <span
+                    style={{
                         color: !team.started
                           ? "#94a3b8"
                           : team.expired
@@ -6721,6 +6858,89 @@ function LiveControlPanel({
                     ),
                   ).join(", ") || "keine Namen gespeichert"}
                 </p>
+
+                {selectedTeam.scoreAdjustment?.active && (
+                  <div
+                    style={{
+                      marginBottom: 16,
+                      padding: 12,
+                      border: "1px solid #92400e",
+                      borderRadius: 10,
+                      background: "#1c1917",
+                      color: "#fde68a",
+                    }}
+                  >
+                    <strong style={{ display: "block", marginBottom: 4 }}>
+                      Score wurde manuell geaendert
+                    </strong>
+                    <span>
+                      Von {selectedTeam.scoreAdjustment?.adjustedBy || "Manager"}{" "}
+                      {selectedTeam.scoreAdjustment?.previousPoints !== undefined
+                        ? `(${selectedTeam.scoreAdjustment.previousPoints} -> ${selectedTeam.totalPoints || 0})`
+                        : ""}
+                    </span>
+                    {selectedTeam.scoreAdjustment?.note && (
+                      <span style={{ display: "block", marginTop: 6, color: "#fde68a" }}>
+                        Notiz: {selectedTeam.scoreAdjustment.note}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {canEditScores && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 10,
+                      marginBottom: 16,
+                      padding: 12,
+                      border: "1px solid #334155",
+                      borderRadius: 10,
+                      background: "#020617",
+                    }}
+                  >
+                    <strong>Punkte manuell korrigieren</strong>
+                    <label style={{ display: "grid", gap: 6 }}>
+                      <span style={{ color: "#cbd5e1" }}>Neuer Gesamtpunktestand</span>
+                      <input
+                        value={scoreDraft}
+                        onChange={(event) => setScoreDraft(event.target.value)}
+                        inputMode="numeric"
+                        style={inputStyle}
+                      />
+                    </label>
+                    <label style={{ display: "grid", gap: 6 }}>
+                      <span style={{ color: "#cbd5e1" }}>Notiz fuer Manager</span>
+                      <input
+                        value={scoreNoteDraft}
+                        onChange={(event) => setScoreNoteDraft(event.target.value)}
+                        placeholder="z. B. Bewertungsfehler bei Frage 4"
+                        style={inputStyle}
+                      />
+                    </label>
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      <button
+                        onClick={handleScoreSave}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: 12,
+                          border: "none",
+                          background: "#f59e0b",
+                          color: "#111827",
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Punkte speichern
+                      </button>
+                      {scoreMessage && (
+                        <span style={{ alignSelf: "center", color: "#93c5fd" }}>
+                          {scoreMessage}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <h4>Antworten in {selectedRound.title}</h4>
                 <div style={{ display: "grid", gap: 8 }}>
@@ -7618,8 +7838,9 @@ function WaitingRoomScreen({
         </p>
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 18 }}>
-          {quizRounds.map((round) => {
+          {quizRounds.map((round, roundIndex) => {
             const isSelected = round.id === selectedRound.id;
+            const publicRoundTitle = getRoundPublicTitle(round, roundIndex, null);
 
             return (
               <button
@@ -7634,7 +7855,7 @@ function WaitingRoomScreen({
                   fontWeight: 700,
                 }}
               >
-                {round.title} - {round.durationMinutes} Min.
+                {publicRoundTitle} - {round.durationMinutes} Min.
               </button>
             );
           })}
@@ -7655,7 +7876,7 @@ function WaitingRoomScreen({
               cursor: "pointer",
             }}
           >
-            {selectedRound.title} freischalten
+            {getRoundDisplayTitle(selectedRound, quizRounds.findIndex((round) => round.id === selectedRound.id))} freischalten
           </button>
         ) : (
           <p style={{ marginTop: 22, color: "#94a3b8", fontSize: 18 }}>
@@ -7736,6 +7957,12 @@ function QuizScreen({
   tiebreakerEligible,
   tiebreakerFinalRoundFinished,
 }) {
+  const activeRoundIndex = quizRounds.findIndex((round) => round.id === activeRound.id);
+  const activeRoundPublicTitle = getRoundPublicTitle(
+    activeRound,
+    activeRoundIndex >= 0 ? activeRoundIndex : 0,
+    lobbyData,
+  );
   const activeQuestions = activeRound.questionIds
     .map((questionId) => questions[questionId])
     .filter(Boolean);
@@ -7830,7 +8057,7 @@ function QuizScreen({
             </p>
           )}
           <p style={{ margin: "8px 0 0", color: "#cbd5e1" }}>
-            {activeRound.title}: {answeredCount}/{activeQuestions.length} beantwortet
+            {activeRoundPublicTitle}: {answeredCount}/{activeQuestions.length} beantwortet
           </p>
           <p style={{ margin: "8px 0 0", color: "#cbd5e1" }}>
             Hinweise: {remainingHints}/{hintBudget}
@@ -7903,7 +8130,7 @@ function QuizScreen({
           <span>
             {roundExtraAnnouncement?.message ||
               "Hier sind ein paar Minuten extra fuer alle Teams."}{" "}
-            +{roundExtraMinutes} Minuten fuer {activeRound.title}.
+            +{roundExtraMinutes} Minuten fuer {activeRoundPublicTitle}.
           </span>
         </section>
       )}
@@ -7979,9 +8206,10 @@ function QuizScreen({
         }}
       >
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {quizRounds.map((round) => {
+          {quizRounds.map((round, roundIndex) => {
             const isActive = round.id === activeRound.id;
             const hasQuestions = round.questionIds.length > 0;
+            const publicRoundTitle = getRoundPublicTitle(round, roundIndex, lobbyData);
 
             return (
               <button
@@ -8002,7 +8230,7 @@ function QuizScreen({
                   cursor: hasQuestions ? "pointer" : "not-allowed",
                 }}
               >
-                {round.title}
+                {publicRoundTitle}
                 {isRoundUnlocked(lobbyData, round.id) ? " - frei" : ""}
               </button>
             );
@@ -8021,7 +8249,7 @@ function QuizScreen({
           >
             {isAdmin ? (
               <button onClick={() => onUnlockRound(activeRound.id)}>
-                {activeRound.title} freischalten
+                {getRoundDisplayTitle(activeRound, activeRoundIndex >= 0 ? activeRoundIndex : 0)} freischalten
               </button>
             ) : (
               <p style={{ margin: 0, color: "#94a3b8" }}>
@@ -8090,7 +8318,7 @@ function QuizScreen({
               }
               question={question}
               remainingHints={remainingHints}
-              roundTitle={activeRound.title}
+              roundTitle={activeRoundPublicTitle}
               savedQuestion={sessionData?.answers?.[question.id]}
               showAnswer={answersRevealed && roundExpired}
             />
