@@ -1972,6 +1972,25 @@ function App() {
 
   async function ensureLobby(cleanedCode, { deployForToday = false } = {}) {
     const lobbyRef = getEventRef(cleanedCode);
+    const existingLobbySnapshot = await getDoc(lobbyRef);
+
+    if (existingLobbySnapshot.exists()) {
+      if (deployForToday) {
+        await setDoc(
+          doc(db, "settings", "app"),
+          {
+            activeEventId: getEventId(cleanedCode),
+            activeQuizCode: cleanedCode,
+            activeSeasonId: "2026",
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        );
+      }
+
+      return existingLobbySnapshot.data();
+    }
+
     const deployedAt = new Date();
     const answerWindowEndsAt = new Date(deployedAt.getTime() + ANSWER_WINDOW_MS);
 
