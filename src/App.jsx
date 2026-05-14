@@ -1273,6 +1273,18 @@ function createPubQuizTestTemplate() {
         },
       ],
     },
+    [
+      "Wie viele Punkte sind pro Quiz moeglich?",
+      "Es gibt 3 Runden mit je 6 Fragen. Fragen 1 bis 5 zaehlen normalerweise 1 Punkt, Frage 6 zaehlt 2 Punkte. Damit sind 21 Punkte moeglich.",
+    ],
+    [
+      "Was passiert bei Gleichstand?",
+      "Wenn ein Gleichstand die Plaetze 1 bis 3 betrifft, kann eine Schaetzfrage gestartet werden. Nur die betroffenen Teams sehen und spielen diese Schaetzfrage.",
+    ],
+    [
+      "Sind Hinweise immer verfuegbar?",
+      "Nein. Jede Runde hat zwar ein Hinweisbudget, aber nicht jede Frage hat automatisch einen eingepflegten Tipp.",
+    ],
   ];
   const draft = createBlankPubQuizDraft();
 
@@ -2371,7 +2383,7 @@ function App() {
     setIssuedTeamPassword(null);
 
     if (entryMode === "first-time") {
-      setMessage("Der Tutorial-Modus kommt bald. Bis dahin bitte 'Ich kenne mich aus' nutzen.");
+      setMessage("Bitte nutzt den Tutorial-Guide oder wechselt danach in den normalen Team-Start.");
       return;
     }
 
@@ -4304,6 +4316,22 @@ function LobbyScreen({
           </button>
         </div>
 
+        {entryMode === "first-time" && (
+          <TutorialGuide
+            onSkip={() => {
+              onAdminChange(false);
+              onEntryModeChange("known");
+              onKnownTeamModeChange("guest");
+            }}
+            onStart={() => {
+              onAdminChange(false);
+              onEntryModeChange("known");
+              onKnownTeamModeChange("guest");
+            }}
+          />
+        )}
+
+        {entryMode !== "first-time" && (
         <form onSubmit={onJoin} style={{ display: "grid", gap: 14, marginTop: 24 }}>
           {entryMode !== "first-time" && !isAdmin && (
             <>
@@ -4422,6 +4450,7 @@ function LobbyScreen({
               : "Team beitreten"}
           </button>
         </form>
+        )}
 
         {message && (
           <p
@@ -4701,6 +4730,17 @@ function MobileLobbyScreen({
                   "Hier soll später ein richtiger Einsteiger-Modus hin: mit Beispielen, Erklärungen und einer kurzen Führung durch den Quizabend.",
                 )}
               </p>
+              <TutorialGuide
+                compact
+                onSkip={() => {
+                  onEntryModeChange("known");
+                  onKnownTeamModeChange("guest");
+                }}
+                onStart={() => {
+                  onEntryModeChange("known");
+                  onKnownTeamModeChange("guest");
+                }}
+              />
               <div
                 style={{
                   marginTop: 20,
@@ -5002,6 +5042,206 @@ function TeamPasswordModal({ isLegacy, password, teamName, onClose }) {
             Verstanden
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+const tutorialSteps = [
+  {
+    eyebrow: "Willkommen",
+    title: "So laeuft ein Quizabend ab",
+    body:
+      "Ihr gebt zuerst Quiz-Code, Teamname und optional euren Namen ein. Danach wartet ihr in der Lobby, bis das Personal Runde 1 freischaltet.",
+    bullets: [
+      "Jedes Team kann auf dem eigenen Handy mitmachen.",
+      "Ein bestehendes Ranking-Team loggt sich mit Team-Passwort ein.",
+      "Neue Teams koennen erst einmal nur fuer heute spielen oder direkt ins Jahresranking gehen.",
+    ],
+  },
+  {
+    eyebrow: "Rundenstart",
+    title: "Die Zeit startet pro Team",
+    body:
+      "Sobald eine Runde freigeschaltet ist, startet euer Team den Timer selbst. Wenn ihr nicht startet, laeuft er nach 10 Minuten automatisch los.",
+    bullets: [
+      "Jedes Team hat seinen eigenen Rundentimer.",
+      "So koennt ihr leicht versetzt anfangen, ohne andere Teams zu blockieren.",
+      "Ihr solltet trotzdem nicht erst lange nur auf Papier raetseln.",
+    ],
+  },
+  {
+    eyebrow: "Punkte",
+    title: "So wird gewertet",
+    body:
+      "Pro Quiz gibt es 3 Runden mit je 6 Fragen. Die Fragen 1 bis 5 zaehlen normalerweise 1 Punkt, Frage 6 zaehlt 2 Punkte.",
+    bullets: [
+      "Maximal sind damit 21 Punkte im Quiz moeglich.",
+      "Eine richtige Antwort wird gespeichert und dann fuer diese Frage gesperrt.",
+      "Das Personal kann im Ausnahmefall spaeter noch fair korrigieren.",
+    ],
+  },
+  {
+    eyebrow: "Hinweise",
+    title: "Tipps sind begrenzt",
+    body:
+      "Manche Fragen haben Hinweise, aber nicht jede. Pro Runde gibt es nur ein begrenztes Hinweisbudget fuer euer Team.",
+    bullets: [
+      "Frage 6 hat keinen Hinweis.",
+      "Wenn bei einer Frage kein Hinweis eingepflegt wurde, erscheint dort auch keiner.",
+      "Hinweise helfen, ersetzen aber keine komplette Loesung.",
+    ],
+  },
+  {
+    eyebrow: "Ranking",
+    title: "Tagesranking, Jahresranking und Schaetzfrage",
+    body:
+      "Im Tagesranking sind alle Teams des Abends dabei. Im Jahresranking sammeln nur Teams mit Opt-in ihre Punkte ueber mehrere Abende.",
+    bullets: [
+      "Podium im Jahresranking: Platz 1 bekommt 1,5, Platz 2 bekommt 1,0 und Platz 3 bekommt 0,5 Zusatzpunkte.",
+      "Die Schaetzfrage erscheint nur, wenn ein Gleichstand die Plaetze 1 bis 3 betrifft.",
+      "Nur betroffene Teams duerfen dann auch wirklich an der Schaetzfrage teilnehmen.",
+    ],
+  },
+  {
+    eyebrow: "Fertig",
+    title: "Danach wisst ihr genug zum Starten",
+    body:
+      "Wenn ihr neu seid, startet am besten erst einmal ueber 'Nur heute'. Spaeter koennt ihr jederzeit ins Jahresranking wechseln und bekommt dann euer Team-Passwort.",
+    bullets: [
+      "Ihr koennt dieses Tutorial jederzeit ueberspringen.",
+      "Alles Wichtige findet ihr spaeter auch wieder in der FAQ.",
+      "Am Ende bringt euch der Button direkt zum normalen Team-Start.",
+    ],
+  },
+];
+
+function TutorialGuide({
+  compact = false,
+  onSkip,
+  onStart,
+}) {
+  const [stepIndex, setStepIndex] = useState(0);
+  const step = tutorialSteps[stepIndex];
+  const isLastStep = stepIndex === tutorialSteps.length - 1;
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gap: compact ? 16 : 18,
+        marginTop: compact ? 18 : 24,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <span
+          style={{
+            color: "#c4b5fd",
+            fontWeight: 700,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            fontSize: 12,
+          }}
+        >
+          {step.eyebrow}
+        </span>
+        <span style={{ color: "#94a3b8", fontSize: 14 }}>
+          Schritt {stepIndex + 1} / {tutorialSteps.length}
+        </span>
+      </div>
+
+      <div
+        style={{
+          padding: compact ? 16 : 18,
+          borderRadius: compact ? 18 : 16,
+          border: "1px solid rgba(196, 181, 253, 0.28)",
+          background: compact ? "rgba(76, 29, 149, 0.18)" : "#0b1220",
+        }}
+      >
+        <h3 style={{ marginTop: 0, marginBottom: 10, fontSize: compact ? 24 : 28 }}>
+          {step.title}
+        </h3>
+        <p style={{ marginTop: 0, color: "#d1d5db", lineHeight: 1.6 }}>
+          {step.body}
+        </p>
+        <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+          {step.bullets.map((bullet) => (
+            <div
+              key={bullet}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "18px 1fr",
+                gap: 10,
+                alignItems: "start",
+                color: "#cbd5e1",
+              }}
+            >
+              <span style={{ color: "#86efac", fontWeight: 800 }}>•</span>
+              <span style={{ lineHeight: 1.5 }}>{bullet}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <button
+          type="button"
+          onClick={() => setStepIndex((current) => Math.max(0, current - 1))}
+          disabled={stepIndex === 0}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 14,
+            border: "1px solid #334155",
+            background: stepIndex === 0 ? "#111827" : "#020617",
+            color: stepIndex === 0 ? "#64748b" : "#cbd5e1",
+            fontWeight: 700,
+            cursor: stepIndex === 0 ? "not-allowed" : "pointer",
+          }}
+        >
+          Zurueck
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            isLastStep
+              ? onStart?.()
+              : setStepIndex((current) => Math.min(tutorialSteps.length - 1, current + 1))
+          }
+          style={{
+            padding: "10px 14px",
+            borderRadius: 14,
+            border: "none",
+            background: "linear-gradient(135deg, #22c55e, #14b8a6)",
+            color: "#04111f",
+            fontWeight: 800,
+            cursor: "pointer",
+          }}
+        >
+          {isLastStep ? "Jetzt starten" : "Weiter"}
+        </button>
+        <button
+          type="button"
+          onClick={onSkip}
+          style={{
+            padding: "10px 14px",
+            borderRadius: 14,
+            border: "1px solid rgba(148, 163, 184, 0.24)",
+            background: "transparent",
+            color: "#94a3b8",
+            fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          Tutorial ueberspringen
+        </button>
       </div>
     </div>
   );
@@ -5444,6 +5684,14 @@ function FaqScreen({
   });
   const [feedbackMessage, setFeedbackMessage] = useState("");
   const faqItems = [
+    [
+      "Wie starte ich als neues Team am einfachsten?",
+      "Am leichtesten startet ihr ueber 'Nur heute'. Wenn ihr spaeter dauerhaft im Jahresranking mitmachen wollt, bekommt ihr bei der ersten Registrierung ein Team-Passwort.",
+    ],
+    [
+      "Wann startet meine Runde?",
+      "Sobald das Personal eine Runde freischaltet, kann euer Team den Timer selbst starten. Wenn ihr nicht startet, beginnt er nach 10 Minuten automatisch.",
+    ],
     [
       "Wie funktioniert das Tagesranking?",
       "Alle Teams in der aktuellen Lobby werden nach Punkten sortiert. Teams ohne Jahresranking-Opt-in sind hier trotzdem dabei.",
