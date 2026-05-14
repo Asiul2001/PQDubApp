@@ -842,6 +842,13 @@ function getAnsweredQuestionCount(team, questionIds = []) {
   return questionIds.filter((questionId) => getQuestionAnswerText(team, questionId)).length;
 }
 
+function getAnswerPointsTotal(answers = {}) {
+  return Object.values(answers || {}).reduce(
+    (sum, answer) => sum + (Number(answer?.pointsAwarded) || 0),
+    0,
+  );
+}
+
 function getQuizLabelForSession(session, pubQuizzes = []) {
   const matchingQuiz = pubQuizzes.find(
     (quiz) =>
@@ -3254,6 +3261,186 @@ function App() {
     }
   }
 
+  async function updateTeamQuestionScore({
+    nextPointsAwarded,
+    note,
+    questionId,
+    questionTitle,
+    teamId,
+    teamName,
+  }) {
+    if (!activeManager?.headManager || !sessionData?.lobbyCode || !teamId || !questionId) {
+      return { ok: false, message: "Nur der Head Manager darf Fragen korrigieren." };
+    }
+
+    const parsedPoints = Number(nextPointsAwarded);
+
+    if (!Number.isFinite(parsedPoints) || parsedPoints < 0) {
+      return { ok: false, message: "Bitte eine gueltige Punktzahl fuer die Frage eingeben." };
+    }
+
+    const sessionRef = getTeamSessionRef(sessionData.lobbyCode, teamId);
+
+    try {
+      const sessionSnapshot = await getDoc(sessionRef);
+
+      if (!sessionSnapshot.exists()) {
+        return { ok: false, message: "Team-Session nicht gefunden." };
+      }
+
+      const currentSession = sessionSnapshot.data();
+      const currentAnswers = currentSession.answers || {};
+      const currentAnswer = currentAnswers[questionId] || {};
+      const previousQuestionPoints = Number(currentAnswer.pointsAwarded) || 0;
+      const previousTotalPoints = Number(currentSession.totalPoints) || 0;
+      const trimmedNote = note?.trim() || "";
+      const nextAnswers = {
+        ...currentAnswers,
+        [questionId]: {
+          ...currentAnswer,
+          pointsAwarded: parsedPoints,
+        },
+      };
+      const nextTotalPoints = getAnswerPointsTotal(nextAnswers);
+      const manualOverrideActive =
+        parsedPoints !== previousQuestionPoints || Boolean(trimmedNote);
+
+      await setDoc(
+        sessionRef,
+        {
+          totalPoints: nextTotalPoints,
+          scoreAdjustment: {
+            active: nextTotalPoints !== previousTotalPoints || manualOverrideActive,
+            adjustedAt: serverTimestamp(),
+            adjustedBy: activeManager.name || activeManager.id || "Head Manager",
+            adjustedById: activeManager.id || activeManager.key || "",
+            note: trimmedNote
+              ? `${questionTitle || questionId}: ${trimmedNote}`
+              : `${questionTitle || questionId} manuell angepasst`,
+            previousPoints: previousTotalPoints,
+          },
+          answers: {
+            [questionId]: {
+              ...currentAnswer,
+              locked: parsedPoints > 0 ? true : currentAnswer.locked || false,
+              manualOverride: {
+                active: manualOverrideActive,
+                adjustedAt: serverTimestamp(),
+                adjustedBy: activeManager.name || activeManager.id || "Head Manager",
+                adjustedById: activeManager.id || activeManager.key || "",
+                note: trimmedNote,
+                previousPointsAwarded: previousQuestionPoints,
+              },
+              pointsAwarded: parsedPoints,
+              updatedAt: serverTimestamp(),
+            },
+          },
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      return {
+        ok: true,
+        message: `Frage ${questionTitle || questionId} fuer ${teamName || currentSession.teamName || teamId} gespeichert.`,
+      };
+    } catch (error) {
+      console.error("TEAM QUESTION SCORE UPDATE ERROR:", error);
+      return {
+        ok: false,
+        message: `Fragenpunkte konnten nicht gespeichert werden: ${error.message}`,
+      };
+    }
+  }
+
+  async function submitManagerAnswerForTeam({
+    answerText,
+    note,
+    question,
+    teamId,
+    teamName,
+  }) {
+    if (!activeManager || !sessionData?.lobbyCode || !teamId || !question?.id) {
+      return { ok: false, message: "Manager-Antwort konnte nicht gespeichert werden." };
+    }
+
+    const sessionRef = getTeamSessionRef(sessionData.lobbyCode, teamId);
+
+    try {
+      const sessionSnapshot = await getDoc(sessionRef);
+
+      if (!sessionSnapshot.exists()) {
+        return { ok: false, message: "Team-Session nicht gefunden." };
+      }
+
+      const currentSession = sessionSnapshot.data();
+      const currentAnswers = currentSession.answers || {};
+      const currentAnswer = currentAnswers[question.id] || {};
+      const previousTotalPoints = Number(currentSession.totalPoints) || 0;
+      const trimmedAnswer = String(answerText || "").trim();
+      const trimmedNote = note?.trim() || "";
+      const result = checkAnswer(
+        trimmedAnswer,
+        question.acceptedAnswers || [],
+        question.points || 0,
+      );
+      const nextAnswer = {
+        ...currentAnswer,
+        locked: result.result === "correct" ? true : currentAnswer.locked || false,
+        managerOverride: {
+          active: true,
+          adjustedAt: serverTimestamp(),
+          adjustedBy: activeManager.name || activeManager.id || "Manager",
+          adjustedById: activeManager.id || activeManager.key || "",
+          note: trimmedNote,
+        },
+        matchedSegments: result.matchedSegments,
+        pointsAwarded: result.result === "correct" ? result.pointsAwarded : 0,
+        result: result.result,
+        text: trimmedAnswer,
+        updatedAt: serverTimestamp(),
+      };
+      const nextAnswers = {
+        ...currentAnswers,
+        [question.id]: nextAnswer,
+      };
+      const nextTotalPoints = getAnswerPointsTotal(nextAnswers);
+
+      await setDoc(
+        sessionRef,
+        {
+          totalPoints: nextTotalPoints,
+          scoreAdjustment: {
+            active: nextTotalPoints !== previousTotalPoints || Boolean(trimmedNote),
+            adjustedAt: serverTimestamp(),
+            adjustedBy: activeManager.name || activeManager.id || "Manager",
+            adjustedById: activeManager.id || activeManager.key || "",
+            note: trimmedNote
+              ? `${question.title}: ${trimmedNote}`
+              : `${question.title} nachgetragen`,
+            previousPoints: previousTotalPoints,
+          },
+          answers: {
+            [question.id]: nextAnswer,
+          },
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      return {
+        ok: true,
+        message: `Antwort fuer ${question.title} bei ${teamName || currentSession.teamName || teamId} gespeichert.`,
+      };
+    } catch (error) {
+      console.error("MANAGER ANSWER SUBMIT ERROR:", error);
+      return {
+        ok: false,
+        message: `Antwort konnte nicht gespeichert werden: ${error.message}`,
+      };
+    }
+  }
+
   async function savePubQuiz(draft) {
     if (!isAdmin) return;
 
@@ -3795,161 +3982,189 @@ function App() {
   const allTeamsReadyForRanking =
     allTeamsFinishedFinalRound &&
     registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
+  const issuedTeamPasswordModal = issuedTeamPassword ? (
+    <TeamPasswordModal
+      isLegacy={issuedTeamPassword.isLegacy}
+      password={issuedTeamPassword.password}
+      teamName={issuedTeamPassword.teamName}
+      onClose={() => setIssuedTeamPassword(null)}
+    />
+  ) : null;
 
   if (appView === "ranking") {
     return (
-      <RankingScreen
-        isAdmin={isAdmin}
-        allTeams={allTeams.length ? allTeams : registeredTeams}
-        globalRankingRows={globalRankingRows}
-        lobbyData={lobbyData}
-        onOpenAdmin={() => setAppView("admin")}
-        onOpenFaq={() => setAppView("faq")}
-        onOpenMain={() => setAppView("main")}
-        onOpenVouchers={() => setAppView("vouchers")}
-        registeredTeams={registeredTeams}
-        sessionData={sessionData}
-        sessionId={sessionId}
-      />
+      <>
+        <RankingScreen
+          isAdmin={isAdmin}
+          allTeams={allTeams.length ? allTeams : registeredTeams}
+          globalRankingRows={globalRankingRows}
+          lobbyData={lobbyData}
+          onOpenAdmin={() => setAppView("admin")}
+          onOpenFaq={() => setAppView("faq")}
+          onOpenMain={() => setAppView("main")}
+          onOpenVouchers={() => setAppView("vouchers")}
+          registeredTeams={registeredTeams}
+          sessionData={sessionData}
+          sessionId={sessionId}
+        />
+        {issuedTeamPasswordModal}
+      </>
     );
   }
 
   if (appView === "vouchers") {
     return (
-      <VoucherScreen
-        allTeamSessions={allTeamSessions}
-        globalRankingRows={globalRankingRows}
-        isAdmin={isAdmin}
-        onOpenAdmin={() => setAppView("admin")}
-        onOpenFaq={() => setAppView("faq")}
-        onOpenMain={() => setAppView("main")}
-        onOpenRanking={() => setAppView("ranking")}
-        pubQuizzes={pubQuizzes}
-        sessionData={sessionData}
-        teamHistorySessions={teamHistorySessions}
-        teamProfiles={teamProfiles}
-        teamSessionId={sessionId}
-        onUpdateVoucherStatus={updateVoucherStatus}
-      />
+      <>
+        <VoucherScreen
+          allTeamSessions={allTeamSessions}
+          globalRankingRows={globalRankingRows}
+          isAdmin={isAdmin}
+          onOpenAdmin={() => setAppView("admin")}
+          onOpenFaq={() => setAppView("faq")}
+          onOpenMain={() => setAppView("main")}
+          onOpenRanking={() => setAppView("ranking")}
+          pubQuizzes={pubQuizzes}
+          sessionData={sessionData}
+          teamHistorySessions={teamHistorySessions}
+          teamProfiles={teamProfiles}
+          teamSessionId={sessionId}
+          onUpdateVoucherStatus={updateVoucherStatus}
+        />
+        {issuedTeamPasswordModal}
+      </>
     );
   }
 
   if (appView === "faq") {
     return (
-      <FaqScreen
-        isAdmin={isAdmin}
-        message={message}
-        onOpenAdmin={() => setAppView("admin")}
-        onOpenMain={() => setAppView("main")}
-        onOpenRanking={() => setAppView("ranking")}
-        onOpenVouchers={() => setAppView("vouchers")}
-        onSubmitFeedback={submitFeedback}
-        sessionData={sessionData}
-      />
+      <>
+        <FaqScreen
+          isAdmin={isAdmin}
+          message={message}
+          onOpenAdmin={() => setAppView("admin")}
+          onOpenMain={() => setAppView("main")}
+          onOpenRanking={() => setAppView("ranking")}
+          onOpenVouchers={() => setAppView("vouchers")}
+          onSubmitFeedback={submitFeedback}
+          sessionData={sessionData}
+        />
+        {issuedTeamPasswordModal}
+      </>
     );
   }
 
   if (appView === "admin" && isAdmin && activeManager) {
     return (
-      <AdminScreen
-        activeManager={activeManager}
-        allTeams={allTeams}
-        allTeamSessions={allTeamSessions}
-        allVoucherDocs={allVoucherDocs}
-        globalRankingRows={globalRankingRows}
-        lobbyData={lobbyData}
-        now={now}
-        onAddRoundExtraTime={addRoundExtraTime}
-        onCloseNewRegistrations={closeNewRegistrations}
-        onOpenAdmin={() => setAppView("admin")}
-        onOpenMain={() => setAppView("main")}
-        onOpenFaq={() => setAppView("faq")}
-        onOpenRanking={() => setAppView("ranking")}
-        onLoadPubQuizByCode={loadPubQuizByCode}
-        onRevealRoundAnswers={revealRoundAnswers}
-        onReopenNewRegistrations={reopenNewRegistrationsForFiveMinutes}
-        onSaveManager={saveManager}
-        onSavePubQuiz={savePubQuiz}
-        onUpdateTeamScore={updateTeamScore}
-        onStartTiebreaker={startTiebreaker}
-        onRoundChange={setActiveRoundId}
-        onUnlockRound={unlockRound}
-        pubQuizzes={pubQuizzes}
-        quizManagerMessage={quizManagerMessage}
-        questions={questions}
-        quizRounds={quizRounds}
-        registeredTeams={registeredTeams}
-        feedbackEntries={feedbackEntries}
-        managers={managers}
-        selectedRound={activeRound}
-        sessionData={sessionData}
-        teamProfiles={teamProfiles}
-        onUpdateVoucherStatus={updateVoucherStatus}
-      />
+      <>
+        <AdminScreen
+          activeManager={activeManager}
+          allTeams={allTeams}
+          allTeamSessions={allTeamSessions}
+          allVoucherDocs={allVoucherDocs}
+          globalRankingRows={globalRankingRows}
+          lobbyData={lobbyData}
+          now={now}
+          onAddRoundExtraTime={addRoundExtraTime}
+          onCloseNewRegistrations={closeNewRegistrations}
+          onOpenAdmin={() => setAppView("admin")}
+          onOpenMain={() => setAppView("main")}
+          onOpenFaq={() => setAppView("faq")}
+          onOpenRanking={() => setAppView("ranking")}
+          onLoadPubQuizByCode={loadPubQuizByCode}
+          onRevealRoundAnswers={revealRoundAnswers}
+          onReopenNewRegistrations={reopenNewRegistrationsForFiveMinutes}
+          onSaveManager={saveManager}
+          onSavePubQuiz={savePubQuiz}
+          onSubmitManagerAnswerForTeam={submitManagerAnswerForTeam}
+          onUpdateTeamQuestionScore={updateTeamQuestionScore}
+          onUpdateTeamScore={updateTeamScore}
+          onStartTiebreaker={startTiebreaker}
+          onRoundChange={setActiveRoundId}
+          onUnlockRound={unlockRound}
+          pubQuizzes={pubQuizzes}
+          quizManagerMessage={quizManagerMessage}
+          questions={questions}
+          quizRounds={quizRounds}
+          registeredTeams={registeredTeams}
+          feedbackEntries={feedbackEntries}
+          managers={managers}
+          selectedRound={activeRound}
+          sessionData={sessionData}
+          teamProfiles={teamProfiles}
+          onUpdateVoucherStatus={updateVoucherStatus}
+        />
+        {issuedTeamPasswordModal}
+      </>
     );
   }
 
   if (!anyRoundUnlocked) {
     return (
-      <WaitingRoomScreen
-        canOpenRanking
-        isAdmin={isAdmin}
-        lobbyCode={sessionData.lobbyCode}
-        onOpenAdmin={() => setAppView("admin")}
-        onOpenFaq={() => setAppView("faq")}
-        onOpenMain={() => setAppView("main")}
-        onOpenRanking={() => setAppView("ranking")}
-        onOpenVouchers={() => setAppView("vouchers")}
-        onRoundChange={setActiveRoundId}
-        onUnlockRound={unlockRound}
-        quizRounds={quizRounds}
-        registeredTeams={registeredTeams}
-        selectedRound={activeRound}
-        sessionData={sessionData}
-      />
+      <>
+        <WaitingRoomScreen
+          canOpenRanking
+          isAdmin={isAdmin}
+          lobbyCode={sessionData.lobbyCode}
+          onOpenAdmin={() => setAppView("admin")}
+          onOpenFaq={() => setAppView("faq")}
+          onOpenMain={() => setAppView("main")}
+          onOpenRanking={() => setAppView("ranking")}
+          onOpenVouchers={() => setAppView("vouchers")}
+          onRoundChange={setActiveRoundId}
+          onUnlockRound={unlockRound}
+          quizRounds={quizRounds}
+          registeredTeams={registeredTeams}
+          selectedRound={activeRound}
+          sessionData={sessionData}
+        />
+        {issuedTeamPasswordModal}
+      </>
     );
   }
 
   return (
-    <QuizScreen
-      activeRound={activeRound}
-      answerDrafts={answerDrafts}
-      allTeamsFinishedFinalRound={allTeamsFinishedFinalRound}
-      allTeamsReadyForRanking={allTeamsReadyForRanking}
-      lobbyData={lobbyData}
-      now={now}
-      onAnswerChange={updateAnswerDraft}
-      onCheckAnswer={checkAndSaveAnswer}
-      onFinalReady={markTeamFinalReady}
-      onOpenAdmin={() => setAppView("admin")}
-      onOpenFaq={() => setAppView("faq")}
-      onOpenMain={() => setAppView("main")}
-      onRevealHint={revealHint}
-      onOpenRanking={() => setAppView("ranking")}
-      onOpenVouchers={() => setAppView("vouchers")}
-      onRoundChange={setActiveRoundId}
-      onStartTeamRound={startTeamRound}
-      onTiebreakerReady={markTeamTiebreakerReady}
-      onTiebreakerSubmit={submitTiebreakerEstimate}
-      onUnlockRound={unlockRound}
-      pointToast={pointToast}
-      questions={questions}
-      quizRounds={quizRounds}
-      isAdmin={isAdmin}
-      canOpenRanking
-      message={message}
-      sessionData={sessionData}
-      sessionId={sessionId}
-      teamFinalReady={Boolean(lobbyData?.finalReady?.[sessionId])}
-      tiebreakerClientId={clientId}
-      tiebreakerEligible={getDailyRankingWithTiebreakers(
-        registeredTeams,
-        lobbyData,
-      ).tieGroups.some((group) =>
-        group.teams.some((team) => team.id === sessionId),
-      )}
-      tiebreakerFinalRoundFinished={currentTeamFinishedFinalRound}
-    />
+    <>
+      <QuizScreen
+        activeRound={activeRound}
+        answerDrafts={answerDrafts}
+        allTeamsFinishedFinalRound={allTeamsFinishedFinalRound}
+        allTeamsReadyForRanking={allTeamsReadyForRanking}
+        lobbyData={lobbyData}
+        now={now}
+        onAnswerChange={updateAnswerDraft}
+        onCheckAnswer={checkAndSaveAnswer}
+        onFinalReady={markTeamFinalReady}
+        onOpenAdmin={() => setAppView("admin")}
+        onOpenFaq={() => setAppView("faq")}
+        onOpenMain={() => setAppView("main")}
+        onRevealHint={revealHint}
+        onOpenRanking={() => setAppView("ranking")}
+        onOpenVouchers={() => setAppView("vouchers")}
+        onRoundChange={setActiveRoundId}
+        onStartTeamRound={startTeamRound}
+        onTiebreakerReady={markTeamTiebreakerReady}
+        onTiebreakerSubmit={submitTiebreakerEstimate}
+        onUnlockRound={unlockRound}
+        pointToast={pointToast}
+        questions={questions}
+        quizRounds={quizRounds}
+        isAdmin={isAdmin}
+        canOpenRanking
+        message={message}
+        sessionData={sessionData}
+        sessionId={sessionId}
+        teamFinalReady={Boolean(lobbyData?.finalReady?.[sessionId])}
+        tiebreakerClientId={clientId}
+        tiebreakerEligible={getDailyRankingWithTiebreakers(
+          registeredTeams,
+          lobbyData,
+        ).tieGroups.some((group) =>
+          group.teams.some((team) => team.id === sessionId),
+        )}
+        tiebreakerFinalRoundFinished={currentTeamFinishedFinalRound}
+      />
+      {issuedTeamPasswordModal}
+    </>
   );
 }
 
@@ -4684,6 +4899,18 @@ function RankingPromptModal({ teamName, onCancel, onSelect }) {
 }
 
 function TeamPasswordModal({ isLegacy, password, teamName, onClose }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard?.writeText(password || "");
+      setCopied(true);
+    } catch (error) {
+      console.error("COPY TEAM PASSWORD ERROR:", error);
+      setCopied(false);
+    }
+  }
+
   return (
     <div
       style={{
@@ -4732,22 +4959,49 @@ function TeamPasswordModal({ isLegacy, password, teamName, onClose }) {
         >
           {password}
         </div>
-        <button
-          type="button"
-          onClick={onClose}
+        <p style={{ margin: "12px 0 0", color: "#bbf7d0", lineHeight: 1.45 }}>
+          Bitte jetzt direkt sichern. Dieses Passwort wird fuer spaetere Logins im
+          Jahresranking gebraucht.
+        </p>
+        <div
           style={{
+            display: "flex",
+            gap: 10,
+            flexWrap: "wrap",
             marginTop: 18,
-            padding: "10px 14px",
-            borderRadius: 12,
-            border: "none",
-            background: "#22c55e",
-            color: "#052e1a",
-            fontWeight: 700,
-            cursor: "pointer",
           }}
         >
-          Verstanden
-        </button>
+          <button
+            type="button"
+            onClick={handleCopy}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "1px solid #86efac",
+              background: "#022c22",
+              color: "#dcfce7",
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            {copied ? "Kopiert" : "Passwort kopieren"}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 12,
+              border: "none",
+              background: "#22c55e",
+              color: "#052e1a",
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            Verstanden
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -5631,6 +5885,8 @@ function AdminScreen({
   onSaveManager,
   onSavePubQuiz,
   onRoundChange,
+  onSubmitManagerAnswerForTeam,
+  onUpdateTeamQuestionScore,
   onUpdateTeamScore,
   onUnlockRound,
   onUpdateVoucherStatus,
@@ -5748,6 +6004,8 @@ function AdminScreen({
             onRevealRoundAnswers={onRevealRoundAnswers}
             onReopenNewRegistrations={onReopenNewRegistrations}
             onRoundChange={onRoundChange}
+            onSubmitManagerAnswerForTeam={onSubmitManagerAnswerForTeam}
+            onUpdateTeamQuestionScore={onUpdateTeamQuestionScore}
             onUpdateTeamScore={onUpdateTeamScore}
             onUnlockRound={onUnlockRound}
             quizRounds={quizRounds}
@@ -6600,6 +6858,19 @@ function TeamDirectory({
                                 : "offen"}{" "}
                             - {answer?.pointsAwarded || 0} Punkte
                           </p>
+                          {answer?.manualOverride?.active && (
+                            <p style={{ margin: "6px 0 0", color: "#fbbf24", fontWeight: 700 }}>
+                              Manuell angepasst
+                              {answer?.manualOverride?.previousPointsAwarded !== undefined
+                                ? ` (${answer.manualOverride.previousPointsAwarded} -> ${answer?.pointsAwarded || 0})`
+                                : ""}
+                            </p>
+                          )}
+                          {answer?.manualOverride?.note && (
+                            <p style={{ margin: "6px 0 0", color: "#fde68a" }}>
+                              Notiz: {answer.manualOverride.note}
+                            </p>
+                          )}
                         </article>
                       );
                     })
@@ -6799,6 +7070,8 @@ function LiveControlPanel({
   onRevealRoundAnswers,
   onReopenNewRegistrations,
   onRoundChange,
+  onSubmitManagerAnswerForTeam,
+  onUpdateTeamQuestionScore,
   onUpdateTeamScore,
   onUnlockRound,
   quizRounds,
@@ -6810,6 +7083,10 @@ function LiveControlPanel({
   const [scoreDraft, setScoreDraft] = useState("");
   const [scoreNoteDraft, setScoreNoteDraft] = useState("");
   const [scoreMessage, setScoreMessage] = useState("");
+  const [questionAnswerDrafts, setQuestionAnswerDrafts] = useState({});
+  const [questionScoreDrafts, setQuestionScoreDrafts] = useState({});
+  const [questionNoteDrafts, setQuestionNoteDrafts] = useState({});
+  const [questionMessages, setQuestionMessages] = useState({});
   const [teamSearch, setTeamSearch] = useState("");
   const roundUnlocked = canRevealAnswers || answersRevealed;
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
@@ -6850,13 +7127,48 @@ function LiveControlPanel({
       setScoreDraft("");
       setScoreNoteDraft("");
       setScoreMessage("");
+      setQuestionAnswerDrafts({});
+      setQuestionScoreDrafts({});
+      setQuestionNoteDrafts({});
+      setQuestionMessages({});
       return;
     }
 
     setScoreDraft(String(Number(selectedTeam.totalPoints) || 0));
     setScoreNoteDraft(selectedTeam.scoreAdjustment?.note || "");
     setScoreMessage("");
-  }, [selectedTeam?.id, selectedTeam?.totalPoints, selectedTeam?.scoreAdjustment?.note]);
+    setQuestionAnswerDrafts(
+      Object.fromEntries(
+        selectedQuestions.map((question) => [
+          question.id,
+          selectedTeam.answers?.[question.id]?.text || "",
+        ]),
+      ),
+    );
+    setQuestionScoreDrafts(
+      Object.fromEntries(
+        selectedQuestions.map((question) => [
+          question.id,
+          String(Number(selectedTeam.answers?.[question.id]?.pointsAwarded) || 0),
+        ]),
+      ),
+    );
+    setQuestionNoteDrafts(
+      Object.fromEntries(
+        selectedQuestions.map((question) => [
+          question.id,
+          selectedTeam.answers?.[question.id]?.manualOverride?.note || "",
+        ]),
+      ),
+    );
+    setQuestionMessages({});
+  }, [
+    selectedQuestions,
+    selectedTeam?.answers,
+    selectedTeam?.id,
+    selectedTeam?.scoreAdjustment?.note,
+    selectedTeam?.totalPoints,
+  ]);
 
   async function handleScoreSave() {
     if (!selectedTeam || !canEditScores) return;
@@ -6869,6 +7181,41 @@ function LiveControlPanel({
     });
 
     setScoreMessage(result.message);
+  }
+
+  async function handleQuestionScoreSave(question) {
+    if (!selectedTeam || !canEditScores || !onUpdateTeamQuestionScore) return;
+
+    const result = await onUpdateTeamQuestionScore({
+      nextPointsAwarded: questionScoreDrafts[question.id] ?? "0",
+      note: questionNoteDrafts[question.id] || "",
+      questionId: question.id,
+      questionTitle: question.title,
+      teamId: selectedTeam.id,
+      teamName: selectedTeam.teamName,
+    });
+
+    setQuestionMessages((current) => ({
+      ...current,
+      [question.id]: result.message,
+    }));
+  }
+
+  async function handleManagerAnswerSave(question) {
+    if (!selectedTeam || !onSubmitManagerAnswerForTeam) return;
+
+    const result = await onSubmitManagerAnswerForTeam({
+      answerText: questionAnswerDrafts[question.id] ?? "",
+      note: questionNoteDrafts[question.id] || "",
+      question,
+      teamId: selectedTeam.id,
+      teamName: selectedTeam.teamName,
+    });
+
+    setQuestionMessages((current) => ({
+      ...current,
+      [question.id]: result.message,
+    }));
   }
 
   return (
@@ -7287,6 +7634,115 @@ function LiveControlPanel({
                               : "noch offen"}{" "}
                           - {answer?.pointsAwarded || 0} Punkte
                         </p>
+                          {answer?.manualOverride?.active && (
+                            <p style={{ margin: "6px 0 0", color: "#fbbf24", fontWeight: 700 }}>
+                              Manuell angepasst
+                              {answer?.manualOverride?.previousPointsAwarded !== undefined
+                                ? ` (${answer.manualOverride.previousPointsAwarded} -> ${answer?.pointsAwarded || 0})`
+                                : ""}
+                            </p>
+                          )}
+                        {answer?.managerOverride?.active && (
+                          <p style={{ margin: "6px 0 0", color: "#93c5fd", fontWeight: 700 }}>
+                            Antwort nachtraeglich von Manager gespeichert
+                          </p>
+                        )}
+                        {canEditScores && (
+                          <div
+                            style={{
+                              display: "grid",
+                              gap: 8,
+                              marginTop: 12,
+                              paddingTop: 12,
+                              borderTop: "1px solid #1f2937",
+                            }}
+                          >
+                            <label style={{ display: "grid", gap: 6 }}>
+                              <span style={{ color: "#cbd5e1" }}>
+                                Antwort fuer diese Frage
+                              </span>
+                              <input
+                                value={questionAnswerDrafts[question.id] ?? ""}
+                                onChange={(event) =>
+                                  setQuestionAnswerDrafts((current) => ({
+                                    ...current,
+                                    [question.id]: event.target.value,
+                                  }))
+                                }
+                                placeholder="Antwort fuer das Team nachtragen"
+                                style={inputStyle}
+                              />
+                            </label>
+                            <label style={{ display: "grid", gap: 6 }}>
+                              <span style={{ color: "#cbd5e1" }}>
+                                Punkte fuer diese Frage
+                              </span>
+                              <input
+                                value={questionScoreDrafts[question.id] ?? ""}
+                                onChange={(event) =>
+                                  setQuestionScoreDrafts((current) => ({
+                                    ...current,
+                                    [question.id]: event.target.value,
+                                  }))
+                                }
+                                inputMode="decimal"
+                                style={inputStyle}
+                              />
+                            </label>
+                            <label style={{ display: "grid", gap: 6 }}>
+                              <span style={{ color: "#cbd5e1" }}>Notiz</span>
+                              <input
+                                value={questionNoteDrafts[question.id] ?? ""}
+                                onChange={(event) =>
+                                  setQuestionNoteDrafts((current) => ({
+                                    ...current,
+                                    [question.id]: event.target.value,
+                                  }))
+                                }
+                                placeholder="z. B. Antwort trotzdem gelten lassen"
+                                style={inputStyle}
+                              />
+                            </label>
+                            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                              <button
+                                onClick={() => handleManagerAnswerSave(question)}
+                                style={{
+                                  padding: "8px 12px",
+                                  borderRadius: 10,
+                                  border: "none",
+                                  background: "#0ea5e9",
+                                  color: "#082f49",
+                                  fontWeight: 700,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                Antwort nachtragen
+                              </button>
+                              <button
+                                onClick={() => handleQuestionScoreSave(question)}
+                                style={{
+                                  padding: "8px 12px",
+                                  borderRadius: 10,
+                                  border: "none",
+                                  background: "#f59e0b",
+                                  color: "#111827",
+                                  fontWeight: 700,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                Frage speichern
+                              </button>
+                              <span style={{ alignSelf: "center", color: "#94a3b8" }}>
+                                Maximalwert laut Quiz: {question.points || 0}
+                              </span>
+                              {questionMessages[question.id] && (
+                                <span style={{ alignSelf: "center", color: "#93c5fd" }}>
+                                  {questionMessages[question.id]}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </article>
                     );
                   })}
