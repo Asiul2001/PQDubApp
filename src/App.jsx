@@ -4240,7 +4240,7 @@ function LobbyScreen({
           PQDubApp
         </h1>
         <p style={{ color: "#94a3b8", textAlign: "center", fontSize: 18 }}>
-          Einstieg wÃ¤hlen, Quiz-Code eingeben und dann entspannt loslegen.
+          Einstieg wählen, Quiz-Code eingeben und dann entspannt loslegen.
         </p>
 
         <div style={{ display: "grid", gap: 12, marginTop: 24 }}>
@@ -4254,7 +4254,7 @@ function LobbyScreen({
           >
             <strong style={{ display: "block", fontSize: 20 }}>Manager access</strong>
             <span style={{ color: "#cbd5e1" }}>
-              Login fÃ¼r Personal mit Username und Passwort.
+              Login für Personal mit Username und Passwort.
             </span>
           </button>
 
@@ -4267,7 +4267,7 @@ function LobbyScreen({
           >
             <strong style={{ display: "block", fontSize: 20 }}>Ich kenne mich aus</strong>
             <span style={{ color: "#cbd5e1", display: "block", marginTop: 4 }}>
-              Direkter Einstieg fÃ¼r Teams mit oder ohne Jahresranking.
+              Direkter Einstieg für Teams mit oder ohne Jahresranking.
             </span>
             <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
               {[
@@ -4311,7 +4311,7 @@ function LobbyScreen({
           >
             <strong style={{ display: "block", fontSize: 20 }}>Ist mein erstes Mal</strong>
             <span style={{ color: "#cbd5e1" }}>
-              Tutorial-Modus mit Beispielen folgt noch. Bis dahin bitte erst einmal Ã¼ber "Ich kenne mich aus" starten.
+              App-Tour für neue Teams mit Regeln, Beispielen und Klick-Hinweisen.
             </span>
           </button>
         </div>
@@ -4675,9 +4675,7 @@ function MobileLobbyScreen({
                     Ist mein erstes Mal
                   </strong>
                   <span style={{ display: "block", marginTop: 8, color: "#cbd5e1", lineHeight: 1.45 }}>
-                    {repairMojibake(
-                      "Ein Tutorial-Modus kommt noch. Später mit Beispielen und kurzer Einführung.",
-                    )}
+                    App-Tour für neue Teams mit Regeln, Beispielen und Klick-Hinweisen.
                   </span>
                 </button>
               </div>
@@ -4723,12 +4721,10 @@ function MobileLobbyScreen({
               <button type="button" onClick={() => onEntryModeChange("picker")} style={secondaryButtonStyle}>
                 Zurück
               </button>
-              <p style={{ margin: "18px 0 0", color: "#c4b5fd", fontWeight: 700 }}>Bald verfügbar</p>
+              <p style={{ margin: "18px 0 0", color: "#c4b5fd", fontWeight: 700 }}>Neu dabei</p>
               <h2 style={{ marginTop: 8, fontSize: 30 }}>Tutorial-Modus</h2>
               <p style={{ color: "#cbd5e1", lineHeight: 1.6 }}>
-                {repairMojibake(
-                  "Hier soll später ein richtiger Einsteiger-Modus hin: mit Beispielen, Erklärungen und einer kurzen Führung durch den Quizabend.",
-                )}
+                Eine kleine Tour durch die App: wo du drückst, was du wo findest und welche Regeln wichtig sind.
               </p>
               <TutorialGuide
                 compact
@@ -4741,19 +4737,6 @@ function MobileLobbyScreen({
                   onKnownTeamModeChange("guest");
                 }}
               />
-              <div
-                style={{
-                  marginTop: 20,
-                  padding: 18,
-                  borderRadius: 20,
-                  background: "rgba(76, 29, 149, 0.24)",
-                  border: "1px solid rgba(196, 181, 253, 0.3)",
-                  color: "#ddd6fe",
-                }}
-              >
-                {repairMojibake("Bis dahin startet ihr am besten über ")}
-                <strong>Ich kenne mich aus</strong>.
-              </div>
             </>
           ) : (
             <>
@@ -5049,72 +5032,206 @@ function TeamPasswordModal({ isLegacy, password, teamName, onClose }) {
 
 const tutorialSteps = [
   {
-    eyebrow: "Willkommen",
-    title: "So laeuft ein Quizabend ab",
+    eyebrow: "Startbildschirm",
+    title: "Hier wählst du deinen Einstieg",
     body:
-      "Ihr gebt zuerst Quiz-Code, Teamname und optional euren Namen ein. Danach wartet ihr in der Lobby, bis das Personal Runde 1 freischaltet.",
+      "Auf dem ersten Bildschirm siehst du drei Wege: Team-Login, Manager access und den Einsteiger-Modus. Als neues Team gehst du später meist über „Nur heute“ weiter.",
     bullets: [
-      "Jedes Team kann auf dem eigenen Handy mitmachen.",
-      "Ein bestehendes Ranking-Team loggt sich mit Team-Passwort ein.",
-      "Neue Teams koennen erst einmal nur fuer heute spielen oder direkt ins Jahresranking gehen.",
+      "Tippe auf „Ist mein erstes Mal“, wenn du diese Tour sehen willst.",
+      "Tippe auf „Ich kenne mich aus“, wenn du direkt spielen willst.",
+      "Manager access ist nur für das Personal.",
     ],
+    mockup: "entry",
   },
   {
-    eyebrow: "Rundenstart",
-    title: "Die Zeit startet pro Team",
+    eyebrow: "Anmeldung",
+    title: "So füllst du den Team-Login aus",
     body:
-      "Sobald eine Runde freigeschaltet ist, startet euer Team den Timer selbst. Wenn ihr nicht startet, laeuft er nach 10 Minuten automatisch los.",
+      "Danach gibst du Quiz-Code, Teamname und optional deinen Namen ein. Ranking-Teams sehen zusätzlich ein Feld für das Team-Passwort.",
     bullets: [
-      "Jedes Team hat seinen eigenen Rundentimer.",
-      "So koennt ihr leicht versetzt anfangen, ohne andere Teams zu blockieren.",
-      "Ihr solltet trotzdem nicht erst lange nur auf Papier raetseln.",
+      "Neue Teams starten am einfachsten über „Nur heute“.",
+      "Bestehende Jahresranking-Teams nehmen „Mein Team ist angemeldet“.",
+      "Wenn ihr neu ins Jahresranking geht, bekommt ihr später ein Passwort angezeigt.",
     ],
+    mockup: "login",
   },
   {
-    eyebrow: "Punkte",
-    title: "So wird gewertet",
+    eyebrow: "Lobby",
+    title: "Hier wartest du auf die Freischaltung",
     body:
-      "Pro Quiz gibt es 3 Runden mit je 6 Fragen. Die Fragen 1 bis 5 zaehlen normalerweise 1 Punkt, Frage 6 zaehlt 2 Punkte.",
+      "Nach dem Join landet ihr in der Lobby. Dort seht ihr euer Team, die Runden und später die Buttons zum Starten.",
     bullets: [
-      "Maximal sind damit 21 Punkte im Quiz moeglich.",
-      "Eine richtige Antwort wird gespeichert und dann fuer diese Frage gesperrt.",
-      "Das Personal kann im Ausnahmefall spaeter noch fair korrigieren.",
+      "Das Personal schaltet jede Runde frei.",
+      "Erst dann kannst du deinen Team-Timer starten.",
+      "Das Ranking und die FAQ findest du auch über das Menü links oben.",
     ],
+    mockup: "lobby",
   },
   {
-    eyebrow: "Hinweise",
-    title: "Tipps sind begrenzt",
+    eyebrow: "Runde spielen",
+    title: "Hier drückst du zum Starten und Antworten",
     body:
-      "Manche Fragen haben Hinweise, aber nicht jede. Pro Runde gibt es nur ein begrenztes Hinweisbudget fuer euer Team.",
+      "Sobald eine Runde freigeschaltet ist, startet euer Team die Runde selbst. Wenn ihr nicht startet, läuft die Zeit nach 10 Minuten automatisch los.",
+    bullets: [
+      "Jedes Team hat seinen eigenen Timer.",
+      "Fragen 1 bis 5 geben normalerweise 1 Punkt, Frage 6 gibt 2 Punkte.",
+      "Richtige Antworten werden gespeichert und dann gesperrt.",
+    ],
+    mockup: "quiz",
+  },
+  {
+    eyebrow: "Hinweise & Ranking",
+    title: "Wichtige Regeln während des Abends",
+    body:
+      "Hinweise sind begrenzt und nicht jede Frage hat einen eingepflegten Tipp. Das Tagesranking zeigt alle Teams des Abends, das Jahresranking nur Teams mit Opt-in.",
     bullets: [
       "Frage 6 hat keinen Hinweis.",
-      "Wenn bei einer Frage kein Hinweis eingepflegt wurde, erscheint dort auch keiner.",
-      "Hinweise helfen, ersetzen aber keine komplette Loesung.",
+      "Maximal sind 21 Punkte im Quiz möglich.",
+      "Die Schätzfrage erscheint nur bei Gleichstand um Platz 1 bis 3.",
     ],
+    mockup: "ranking",
   },
   {
-    eyebrow: "Ranking",
-    title: "Tagesranking, Jahresranking und Schaetzfrage",
+    eyebrow: "Los geht's",
+    title: "Jetzt findest du dich in der App zurecht",
     body:
-      "Im Tagesranking sind alle Teams des Abends dabei. Im Jahresranking sammeln nur Teams mit Opt-in ihre Punkte ueber mehrere Abende.",
+      "Du kannst dieses Tutorial jederzeit überspringen. Danach landest du direkt im normalen Team-Start und kannst mit dem Quiz-Code loslegen.",
     bullets: [
-      "Podium im Jahresranking: Platz 1 bekommt 1,5, Platz 2 bekommt 1,0 und Platz 3 bekommt 0,5 Zusatzpunkte.",
-      "Die Schaetzfrage erscheint nur, wenn ein Gleichstand die Plaetze 1 bis 3 betrifft.",
-      "Nur betroffene Teams duerfen dann auch wirklich an der Schaetzfrage teilnehmen.",
+      "Am einfachsten startest du zuerst über „Nur heute“.",
+      "Alles Wichtige kannst du später auch wieder in der FAQ nachlesen.",
+      "Wenn ihr ins Jahresranking wollt, bekommt ihr euer Team-Passwort direkt angezeigt.",
     ],
-  },
-  {
-    eyebrow: "Fertig",
-    title: "Danach wisst ihr genug zum Starten",
-    body:
-      "Wenn ihr neu seid, startet am besten erst einmal ueber 'Nur heute'. Spaeter koennt ihr jederzeit ins Jahresranking wechseln und bekommt dann euer Team-Passwort.",
-    bullets: [
-      "Ihr koennt dieses Tutorial jederzeit ueberspringen.",
-      "Alles Wichtige findet ihr spaeter auch wieder in der FAQ.",
-      "Am Ende bringt euch der Button direkt zum normalen Team-Start.",
-    ],
+    mockup: "finish",
   },
 ];
+
+function TutorialMockup({ type }) {
+  const frameStyle = {
+    padding: 14,
+    borderRadius: 18,
+    border: "1px solid rgba(148, 163, 184, 0.18)",
+    background: "linear-gradient(180deg, rgba(15, 23, 42, 0.94), rgba(2, 6, 23, 0.96))",
+    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
+  };
+  const chipStyle = (active = false) => ({
+    padding: "8px 10px",
+    borderRadius: 999,
+    border: `1px solid ${active ? "#38bdf8" : "#334155"}`,
+    background: active ? "#082f49" : "#020617",
+    color: active ? "#e0f2fe" : "#cbd5e1",
+    fontWeight: 700,
+    fontSize: 12,
+  });
+  const cardStyle = (accent) => ({
+    padding: 12,
+    borderRadius: 14,
+    border: `1px solid ${accent}`,
+    background: "rgba(8, 15, 30, 0.82)",
+  });
+
+  if (type === "entry") {
+    return (
+      <div style={frameStyle}>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={cardStyle("rgba(56, 189, 248, 0.3)")}>
+            <strong>Ich kenne mich aus</strong>
+            <p style={{ margin: "6px 0 0", color: "#94a3b8", fontSize: 13 }}>
+              Für Teams mit oder ohne Jahresranking
+            </p>
+          </div>
+          <div style={cardStyle("rgba(245, 158, 11, 0.3)")}>
+            <strong>Manager access</strong>
+            <p style={{ margin: "6px 0 0", color: "#94a3b8", fontSize: 13 }}>
+              Nur für das Personal
+            </p>
+          </div>
+          <div style={cardStyle("rgba(196, 181, 253, 0.34)")}>
+            <strong>Ist mein erstes Mal</strong>
+            <p style={{ margin: "6px 0 0", color: "#cbd5e1", fontSize: 13 }}>
+              Hier tippen für die Tour
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (type === "login") {
+    return (
+      <div style={frameStyle}>
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ ...cardStyle("rgba(148, 163, 184, 0.2)"), color: "#cbd5e1" }}>Quiz-Code: `ABC123`</div>
+          <div style={{ ...cardStyle("rgba(148, 163, 184, 0.2)"), color: "#cbd5e1" }}>Teamname: `Quizzer`</div>
+          <div style={{ ...cardStyle("rgba(34, 197, 94, 0.28)"), color: "#dcfce7" }}>Button: `Als Team starten`</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (type === "lobby") {
+    return (
+      <div style={frameStyle}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          <span style={chipStyle(true)}>Runde 1</span>
+          <span style={chipStyle(false)}>Runde 2</span>
+          <span style={chipStyle(false)}>Runde 3</span>
+        </div>
+        <div style={cardStyle("rgba(56, 189, 248, 0.24)")}>
+          <strong>Lobby</strong>
+          <p style={{ margin: "8px 0 0", color: "#cbd5e1", fontSize: 13 }}>
+            Hier wartet ihr, bis das Personal die Runde freischaltet.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (type === "quiz") {
+    return (
+      <div style={frameStyle}>
+        <div style={{ ...cardStyle("rgba(34, 197, 94, 0.24)"), marginBottom: 10 }}>
+          <strong>Runde 1: Im Nachtclub</strong>
+          <p style={{ margin: "8px 0 0", color: "#cbd5e1", fontSize: 13 }}>
+            Hier drückst du auf `Runde starten`.
+          </p>
+        </div>
+        <div style={{ ...cardStyle("rgba(148, 163, 184, 0.2)"), color: "#cbd5e1" }}>
+          Frage 1
+          <p style={{ margin: "6px 0 0", fontSize: 13, color: "#94a3b8" }}>
+            Antwort eingeben → prüfen → speichern
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (type === "ranking") {
+    return (
+      <div style={frameStyle}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <span style={chipStyle(true)}>Tagesranking</span>
+          <span style={chipStyle(false)}>Jahresranking</span>
+        </div>
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={cardStyle("rgba(148, 163, 184, 0.18)")}>1. Team A — 21 Pkt.</div>
+          <div style={cardStyle("rgba(148, 163, 184, 0.18)")}>2. Team B — 21 Pkt.</div>
+          <div style={cardStyle("rgba(148, 163, 184, 0.18)")}>3. Team C — 20 Pkt.</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={frameStyle}>
+      <div style={{ ...cardStyle("rgba(34, 197, 94, 0.24)"), color: "#dcfce7" }}>
+        <strong>Bereit zum Start</strong>
+        <p style={{ margin: "8px 0 0", color: "#cbd5e1", fontSize: 13 }}>
+          Danach wechselst du direkt in den normalen Team-Start.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function TutorialGuide({
   compact = false,
@@ -5172,6 +5289,7 @@ function TutorialGuide({
         <p style={{ marginTop: 0, color: "#d1d5db", lineHeight: 1.6 }}>
           {step.body}
         </p>
+        <TutorialMockup type={step.mockup} />
         <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
           {step.bullets.map((bullet) => (
             <div
@@ -5206,7 +5324,7 @@ function TutorialGuide({
             cursor: stepIndex === 0 ? "not-allowed" : "pointer",
           }}
         >
-          Zurueck
+          Zurück
         </button>
         <button
           type="button"
@@ -5240,7 +5358,7 @@ function TutorialGuide({
             cursor: "pointer",
           }}
         >
-          Tutorial ueberspringen
+          Tutorial überspringen
         </button>
       </div>
     </div>
@@ -5686,7 +5804,7 @@ function FaqScreen({
   const faqItems = [
     [
       "Wie starte ich als neues Team am einfachsten?",
-      "Am leichtesten startet ihr ueber 'Nur heute'. Wenn ihr spaeter dauerhaft im Jahresranking mitmachen wollt, bekommt ihr bei der ersten Registrierung ein Team-Passwort.",
+      "Am leichtesten startet ihr über 'Nur heute'. Wenn ihr später dauerhaft im Jahresranking mitmachen wollt, bekommt ihr bei der ersten Registrierung ein Team-Passwort.",
     ],
     [
       "Wann startet meine Runde?",
