@@ -6783,6 +6783,7 @@ function VoucherDirectory({
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedCreateRank, setSelectedCreateRank] = useState("1");
   const [selectedCreateTeamId, setSelectedCreateTeamId] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
   const [voucherMessage, setVoucherMessage] = useState("");
   const isNarrow = useIsNarrowScreen();
   const canEditVouchers = Boolean(activeManager?.headManager);
@@ -6791,7 +6792,34 @@ function VoucherDirectory({
     allVoucherDocs,
     pubQuizzes,
   );
-  const teamDirectory = aggregateTeamDirectory(allTeamSessions, teamProfiles);
+  const voucherLatestPlayedByTeam = new Map();
+
+  allEffectiveVouchers.forEach((voucher) => {
+    if (!voucher.teamId) return;
+
+    const currentMs = voucherLatestPlayedByTeam.get(voucher.teamId) || 0;
+    const voucherMs = getTimestampMs(voucher.awardedAt);
+
+    if (voucherMs > currentMs) {
+      voucherLatestPlayedByTeam.set(voucher.teamId, voucherMs);
+    }
+  });
+
+  const teamDirectory = aggregateTeamDirectory(allTeamSessions, teamProfiles).sort((a, b) => {
+    const voucherDifference =
+      (voucherLatestPlayedByTeam.get(b.id) || 0) - (voucherLatestPlayedByTeam.get(a.id) || 0);
+
+    if (voucherDifference !== 0) return voucherDifference;
+
+    const sessionDifference =
+      getTimestampMs(getCompletionValue((b.sessions || [])[0])) -
+      getTimestampMs(getCompletionValue((a.sessions || [])[0]));
+
+    if (sessionDifference !== 0) return sessionDifference;
+
+    return (a.teamName || "").localeCompare(b.teamName || "");
+  });
+  const normalizedSearchTerm = normalizeTeamName(searchTerm || "");
   const eventSummaries = Array.from(
     [...allTeamSessions, ...allVoucherDocs].reduce((map, entry) => {
       const eventId = entry.eventId || getEventId(entry.quizCode || entry.lobbyCode || "");
@@ -6820,8 +6848,22 @@ function VoucherDirectory({
       return map;
     }, new Map()).values(),
   ).sort((a, b) => getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt));
+  const visibleEventSummaries = eventSummaries.filter((event) => {
+    const voucherCount = allEffectiveVouchers.filter(
+      (voucher) => voucher.eventId === event.eventId,
+    ).length;
+
+    if (voucherCount === 0) return false;
+    if (!normalizedSearchTerm) return true;
+
+    return normalizeTeamName(
+      `${event.quizLabel || ""} ${event.quizCode || ""} ${formatCompletionDate(event.awardedAt)}`,
+    ).includes(normalizedSearchTerm);
+  });
   const selectedEvent =
-    eventSummaries.find((event) => event.eventId === selectedEventId) || eventSummaries[0] || null;
+    visibleEventSummaries.find((event) => event.eventId === selectedEventId) ||
+    visibleEventSummaries[0] ||
+    null;
   const selectedEventSessions = mergeSessionParticipation(
     allTeamSessions.filter((session) => session.eventId === selectedEvent?.eventId),
   ).sort((a, b) => {
@@ -6840,12 +6882,25 @@ function VoucherDirectory({
     .filter((voucher) => voucher.eventId === selectedEvent?.eventId)
     .sort(
       (a, b) =>
+        getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt) ||
         (Number(a.rank) || Number.MAX_SAFE_INTEGER) -
           (Number(b.rank) || Number.MAX_SAFE_INTEGER) ||
         (a.teamName || "").localeCompare(b.teamName || ""),
     );
+  const visibleVoucherTeams = teamDirectory.filter((team) => {
+    const voucherCount = allEffectiveVouchers.filter(
+      (voucher) => voucher.teamId === team.id,
+    ).length;
+
+    if (voucherCount === 0) return false;
+    if (!normalizedSearchTerm) return true;
+
+    return normalizeTeamName(team.teamName || "").includes(normalizedSearchTerm);
+  });
   const selectedTeam =
-    teamDirectory.find((team) => team.id === selectedTeamId) || teamDirectory[0] || null;
+    visibleVoucherTeams.find((team) => team.id === selectedTeamId) ||
+    visibleVoucherTeams[0] ||
+    null;
   const selectedTeamVouchers = selectedTeam
     ? buildVoucherEntries(
         selectedTeam.sessions || [],
@@ -6856,16 +6911,16 @@ function VoucherDirectory({
     : [];
 
   useEffect(() => {
-    if (!eventSummaries.some((event) => event.eventId === selectedEventId)) {
-      setSelectedEventId(eventSummaries[0]?.eventId || null);
+    if (!visibleEventSummaries.some((event) => event.eventId === selectedEventId)) {
+      setSelectedEventId(visibleEventSummaries[0]?.eventId || null);
     }
-  }, [eventSummaries, selectedEventId]);
+  }, [selectedEventId, visibleEventSummaries]);
 
   useEffect(() => {
-    if (!teamDirectory.some((team) => team.id === selectedTeamId)) {
-      setSelectedTeamId(teamDirectory[0]?.id || null);
+    if (!visibleVoucherTeams.some((team) => team.id === selectedTeamId)) {
+      setSelectedTeamId(visibleVoucherTeams[0]?.id || null);
     }
-  }, [selectedTeamId, teamDirectory]);
+  }, [selectedTeamId, visibleVoucherTeams]);
 
   useEffect(() => {
     if (!selectedEventSessions.some((team) => (team.teamId || team.id) === selectedCreateTeamId)) {
@@ -6998,6 +7053,18 @@ function VoucherDirectory({
         })}
       </div>
 
+      <label style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+        <span style={{ color: "#cbd5e1", fontWeight: 700 }}>
+          {viewMode === "event" ? "Event suchen" : "Team suchen"}
+        </span>
+        <input
+          value={searchTerm}
+          onChange={(event) => setSearchTerm(event.target.value)}
+          placeholder={viewMode === "event" ? "Nach Quizname, Code oder Datum suchen" : "Nach Teamname suchen"}
+          style={inputStyle}
+        />
+      </label>
+
       {viewMode === "event" ? (
         <div
           style={{
@@ -7008,12 +7075,12 @@ function VoucherDirectory({
           }}
         >
           <div style={{ display: "grid", gap: 10 }}>
-            {eventSummaries.length === 0 ? (
+            {visibleEventSummaries.length === 0 ? (
               <p style={{ color: "#94a3b8" }}>
-                Noch keine Events mit Gutscheinen oder Teamdaten vorhanden.
+                Kein Gutschein-Event zu dieser Suche gefunden.
               </p>
             ) : (
-              eventSummaries.map((event) => {
+              visibleEventSummaries.map((event) => {
                 const isSelected = selectedEvent?.eventId === event.eventId;
                 const voucherCount = allEffectiveVouchers.filter(
                   (voucher) => voucher.eventId === event.eventId,
@@ -7035,8 +7102,19 @@ function VoucherDirectory({
                     }}
                   >
                     <strong>{event.quizLabel || event.quizCode || event.eventId}</strong>
+                    <span
+                      style={{
+                        display: "block",
+                        marginTop: 6,
+                        color: "#bfdbfe",
+                        fontSize: 13,
+                        fontWeight: 700,
+                      }}
+                    >
+                      Gespielt am {formatCompletionDate(event.awardedAt)}
+                    </span>
                     <span style={{ display: "block", marginTop: 4, color: "#94a3b8" }}>
-                      {formatCompletionDate(event.awardedAt)} - {voucherCount}/3 Gutscheine
+                      {voucherCount}/3 Gutscheine
                     </span>
                   </button>
                 );
@@ -7055,8 +7133,18 @@ function VoucherDirectory({
             >
               <h3 style={{ marginTop: 0 }}>{selectedEvent.quizLabel || "Pubquiz"}</h3>
               <p style={{ color: "#cbd5e1" }}>
-                Code <strong>{selectedEvent.quizCode || "?"}</strong> - Event{" "}
-                <strong>{formatCompletionDate(selectedEvent.awardedAt)}</strong>
+                Code <strong>{selectedEvent.quizCode || "?"}</strong>
+              </p>
+              <p
+                style={{
+                  marginTop: 8,
+                  marginBottom: 0,
+                  color: "#bfdbfe",
+                  fontWeight: 700,
+                  fontSize: 16,
+                }}
+              >
+                Gespielt am {formatCompletionDate(selectedEvent.awardedAt)}
               </p>
 
               <div
@@ -7150,6 +7238,16 @@ function VoucherDirectory({
                         <span style={{ display: "block", marginTop: 6, color: "#cbd5e1" }}>
                           {voucher.title} - {voucher.description}
                         </span>
+                        <span
+                          style={{
+                            display: "block",
+                            marginTop: 6,
+                            color: "#bfdbfe",
+                            fontWeight: 700,
+                          }}
+                        >
+                          Gespielt am {formatCompletionDate(voucher.awardedAt)}
+                        </span>
                         <span style={{ display: "block", marginTop: 6, color: "#94a3b8" }}>
                           {voucher.totalPoints || 0} Punkte - Status{" "}
                           <strong>
@@ -7214,10 +7312,12 @@ function VoucherDirectory({
           }}
         >
           <div style={{ display: "grid", gap: 10 }}>
-            {teamDirectory.length === 0 ? (
-              <p style={{ color: "#94a3b8" }}>Noch keine Teams vorhanden.</p>
+            {visibleVoucherTeams.length === 0 ? (
+              <p style={{ color: "#94a3b8" }}>
+                Kein Team mit Gutscheinen zu dieser Suche gefunden.
+              </p>
             ) : (
-              teamDirectory.map((team) => {
+              visibleVoucherTeams.map((team) => {
                 const isSelected = selectedTeam?.id === team.id;
                 const voucherCount = allEffectiveVouchers.filter(
                   (voucher) => voucher.teamId === team.id,
@@ -7239,6 +7339,20 @@ function VoucherDirectory({
                     }}
                   >
                     <strong>{team.teamName}</strong>
+                    <span
+                      style={{
+                        display: "block",
+                        marginTop: 6,
+                        color: "#bfdbfe",
+                        fontSize: 13,
+                        fontWeight: 700,
+                      }}
+                    >
+                      Letzter Gewinn:{" "}
+                      {voucherLatestPlayedByTeam.get(team.id)
+                        ? formatCompletionDate(voucherLatestPlayedByTeam.get(team.id))
+                        : "unbekannt"}
+                    </span>
                     <span style={{ display: "block", marginTop: 4, color: "#94a3b8" }}>
                       {voucherCount} Gutschein{voucherCount === 1 ? "" : "e"} -{" "}
                       {(team.gamesPlayed ?? team.sessions.length)} Teilnahmen
@@ -7261,6 +7375,20 @@ function VoucherDirectory({
               <h3 style={{ marginTop: 0 }}>{selectedTeam.teamName}</h3>
               <p style={{ color: "#cbd5e1" }}>
                 Teilnahmen <strong>{selectedTeam.gamesPlayed ?? selectedTeam.sessions.length}</strong>
+              </p>
+              <p
+                style={{
+                  marginTop: 8,
+                  marginBottom: 0,
+                  color: "#bfdbfe",
+                  fontWeight: 700,
+                  fontSize: 16,
+                }}
+              >
+                Letzter Gewinn:{" "}
+                {voucherLatestPlayedByTeam.get(selectedTeam.id)
+                  ? formatCompletionDate(voucherLatestPlayedByTeam.get(selectedTeam.id))
+                  : "unbekannt"}
               </p>
               {selectedTeamVouchers.length === 0 ? (
                 <p style={{ color: "#94a3b8" }}>Dieses Team hat bisher keinen Gutschein.</p>
@@ -7288,6 +7416,16 @@ function VoucherDirectory({
                         </strong>
                         <span style={{ display: "block", marginTop: 6, color: "#cbd5e1" }}>
                           {voucher.title}
+                        </span>
+                        <span
+                          style={{
+                            display: "block",
+                            marginTop: 6,
+                            color: "#bfdbfe",
+                            fontWeight: 700,
+                          }}
+                        >
+                          Gespielt am {formatCompletionDate(voucher.awardedAt)}
                         </span>
                         <span style={{ display: "block", marginTop: 6, color: "#94a3b8" }}>
                           {voucher.totalPoints || 0} Punkte - Status{" "}
