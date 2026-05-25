@@ -5,6 +5,7 @@ import {
   writeBatch,
   collection,
   collectionGroup,
+  deleteDoc,
   deleteField,
   doc,
   getDoc,
@@ -27,6 +28,25 @@ import {
   questions as defaultQuestions,
   quizRounds as defaultQuizRounds,
 } from "./quiz";
+import {
+  DEFAULT_ROUND_START_WINDOW_MS,
+  getEffectiveRoundStartMs,
+  getManualRoundStartMs,
+  getRoundEligibilityMs,
+  getRoundDurationMs,
+  getRoundExtraMinutes,
+  getRoundUnlockMs,
+  getTimestampMs,
+  isRoundFinished,
+} from "./quizTiming";
+import {
+  getDailyRankingWithTiebreakers,
+  getEstimateValue,
+  getTiebreakerDistance,
+  getTiebreakerParticipant,
+  getTiebreakerState,
+  getTiebreakerSubmission,
+} from "./tiebreaker";
 
 const pageStyle = {
   minHeight: "100vh",
@@ -73,7 +93,7 @@ const pointMessages = [
 ];
 
 const ANSWER_WINDOW_MS = 5 * 60 * 60 * 1000;
-const ROUND_START_WINDOW_MS = 10 * 60 * 1000;
+const ROUND_START_WINDOW_MS = DEFAULT_ROUND_START_WINDOW_MS;
 const EMERGENCY_JOIN_WINDOW_MS = 5 * 60 * 1000;
 const HIDDEN_YEARLY_RANKING_TEAM_IDS = new Set(["asiul"]);
 
@@ -183,12 +203,14 @@ function createManagerRecord({
   active = true,
   createdAt,
   headManager = false,
+  canEditScores = headManager,
 }) {
   return {
     key,
     name: name || key,
     password,
     active,
+    canEditScores,
     headManager,
     createdAt: createdAt || serverTimestamp(),
     lastLoginAt: serverTimestamp(),
@@ -212,41 +234,6 @@ function getTeammateRef(teamId, teammateId) {
   return doc(db, "teams", teamId, "teammates", teammateId);
 }
 
-function getManualRoundStartMs(lobbyData, roundId) {
-  const startedAt = lobbyData?.roundStarts?.[roundId];
-  const startedAtMs = getTimestampMs(startedAt);
-
-  return startedAtMs || null;
-}
-
-function getEffectiveRoundStartMs(sessionData, lobbyData, roundId, now = Date.now()) {
-  const manualStartMs = getManualRoundStartMs(sessionData, roundId);
-
-  if (manualStartMs !== null) return manualStartMs;
-
-  const unlockMs = getRoundUnlockMs(lobbyData, roundId);
-  const autoStartMs = unlockMs ? unlockMs + ROUND_START_WINDOW_MS : null;
-
-  if (autoStartMs && now >= autoStartMs) {
-    return autoStartMs;
-  }
-
-  return null;
-}
-
-function getRoundExtraMinutes(lobbyData, roundId) {
-  const rawValue = Number(lobbyData?.roundExtraMinutes?.[roundId]);
-
-  return Number.isFinite(rawValue) ? Math.max(0, Math.min(30, rawValue)) : 0;
-}
-
-function getRoundDurationMs(round, lobbyData) {
-  const baseDurationMs = (round?.durationMinutes || 0) * 60 * 1000;
-  const extraDurationMs = getRoundExtraMinutes(lobbyData, round?.id) * 60 * 1000;
-
-  return baseDurationMs + extraDurationMs;
-}
-
 function getEmergencyJoinWindowEndsMs(lobbyData) {
   return getTimestampMs(lobbyData?.emergencyJoinWindowEndsAt);
 }
@@ -259,10 +246,6 @@ function isEmergencyJoinWindowActive(lobbyData, now = Date.now()) {
 function isNewTeamJoinClosed(lobbyData, now = Date.now()) {
   const closedAtMs = getTimestampMs(lobbyData?.closedAt);
   return Boolean(closedAtMs && !isEmergencyJoinWindowActive(lobbyData, now));
-}
-
-function getRoundUnlockMs(lobbyData, roundId) {
-  return getTimestampMs(lobbyData?.roundStarts?.[roundId]);
 }
 
 function isRoundUnlocked(lobbyData, roundId) {
@@ -279,19 +262,6 @@ function formatDuration(ms) {
   const seconds = totalSeconds % 60;
 
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-function getTimestampMs(value) {
-  if (!value) return 0;
-  if (typeof value.toMillis === "function") return value.toMillis();
-  if (typeof value.seconds === "number") return value.seconds * 1000;
-  if (value instanceof Date) return value.getTime();
-  if (typeof value === "number") return value;
-  if (typeof value === "string") {
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? 0 : parsed;
-  }
-  return 0;
 }
 
 function repairMojibake(value) {
@@ -470,21 +440,6 @@ function formatStopwatch(ms) {
   ).padStart(3, "0")}`;
 }
 
-function isRoundFinished(team, round, now, lobbyData) {
-  const startMs = getEffectiveRoundStartMs(team, lobbyData, round.id, now);
-
-  if (startMs === null) return false;
-
-  const durationMs = getRoundDurationMs(round, lobbyData);
-  if (startMs + durationMs <= now) return true;
-
-  return round.questionIds.every((questionId) => {
-    const savedText = team?.answers?.[questionId]?.text;
-
-    return typeof savedText === "string" && savedText.trim().length > 0;
-  });
-}
-
 function getSessionDateKey(session) {
   const ms = getTimestampMs(getCompletionValue(session));
 
@@ -644,110 +599,6 @@ function aggregateYearlyRanking(teams) {
   return Array.from(groupedTeams.values()).sort(
     (a, b) => b.totalPoints - a.totalPoints || a.teamName.localeCompare(b.teamName),
   );
-}
-
-function getTiebreakerSubmission(lobbyData, teamId) {
-  return lobbyData?.tiebreakerSubmissions?.[teamId] || null;
-}
-
-function getTiebreakerParticipant(lobbyData, teamId) {
-  return lobbyData?.tiebreakerParticipants?.[teamId] || null;
-}
-
-function getEstimateValue(lobbyData, teamId) {
-  const rawEstimate = getTiebreakerSubmission(lobbyData, teamId)?.estimate;
-  const estimate = Number(rawEstimate);
-
-  return Number.isFinite(estimate) ? estimate : null;
-}
-
-function getTiebreakerSubmittedMs(lobbyData, teamId) {
-  return getTimestampMs(getTiebreakerSubmission(lobbyData, teamId)?.submittedAt);
-}
-
-function getTiebreakerDistance(lobbyData, teamId) {
-  const answer = Number(lobbyData?.tiebreakerAnswer);
-  const estimate = getEstimateValue(lobbyData, teamId);
-
-  if (!Number.isFinite(answer) || estimate === null) return null;
-
-  return Math.abs(estimate - answer);
-}
-
-function getDailyRankingWithTiebreakers(teams, lobbyData) {
-  const pointGroups = new Map();
-
-  teams.forEach((team) => {
-    const points = team.totalPoints || 0;
-    pointGroups.set(points, [...(pointGroups.get(points) || []), team]);
-  });
-
-  const sortedPointGroups = Array.from(pointGroups.entries()).sort(
-    ([pointsA], [pointsB]) => pointsB - pointsA,
-  );
-  const ranking = [];
-  const tieGroups = [];
-
-  sortedPointGroups.forEach(([points, pointGroup]) => {
-    const sortedGroup = [...pointGroup].sort((a, b) => {
-      const answer = Number(lobbyData?.tiebreakerAnswer);
-      const exactA =
-        Number.isFinite(answer) && getEstimateValue(lobbyData, a.id) === answer;
-      const exactB =
-        Number.isFinite(answer) && getEstimateValue(lobbyData, b.id) === answer;
-
-      if (exactA !== exactB) return exactA ? -1 : 1;
-
-      const distanceA = getTiebreakerDistance(lobbyData, a.id);
-      const distanceB = getTiebreakerDistance(lobbyData, b.id);
-
-      if (distanceA !== null && distanceB !== null && distanceA !== distanceB) {
-        return distanceA - distanceB;
-      }
-
-      if (distanceA !== null && distanceB === null) return -1;
-      if (distanceA === null && distanceB !== null) return 1;
-
-      const submittedA = getTiebreakerSubmittedMs(lobbyData, a.id);
-      const submittedB = getTiebreakerSubmittedMs(lobbyData, b.id);
-
-      if (submittedA && submittedB && submittedA !== submittedB) {
-        return submittedA - submittedB;
-      }
-
-      if (submittedA && !submittedB) return -1;
-      if (!submittedA && submittedB) return 1;
-
-      const estimateA = getEstimateValue(lobbyData, a.id);
-      const estimateB = getEstimateValue(lobbyData, b.id);
-
-      if (estimateA !== null && estimateB !== null && estimateA !== estimateB) {
-        return estimateA - estimateB;
-      }
-
-      return a.teamName.localeCompare(b.teamName);
-    });
-    const startIndex = ranking.length;
-
-    ranking.push(...sortedGroup);
-
-    if (
-      pointGroup.length > 1 &&
-      startIndex < 3 &&
-      startIndex + pointGroup.length > 0
-    ) {
-      tieGroups.push({
-        points,
-        teams: sortedGroup,
-        affectsPodium: startIndex < 3,
-      });
-    }
-  });
-
-  return {
-    ranking,
-    tieGroups,
-  };
 }
 
 function aggregateTeamDirectory(teams, teamProfiles = []) {
@@ -910,19 +761,67 @@ function getVoucherIdForSession(session) {
   return `${eventId}__${teamId}__rank${rank}`;
 }
 
-function buildVoucherEntries(sessions = [], voucherDocs = [], pubQuizzes = []) {
+function getVoucherEventRankKey(entry) {
+  const eventId = entry?.eventId || getEventId(entry?.lobbyCode || entry?.quizCode || "");
+  const rank = Number(entry?.rank ?? entry?.rankDaily);
+
+  if (!eventId || ![1, 2, 3].includes(rank)) return "";
+
+  return `${eventId}__rank${rank}`;
+}
+
+function getVoucherIdentityKey(entry) {
+  const eventId = entry?.eventId || getEventId(entry?.lobbyCode || entry?.quizCode || "");
+  const teamId = entry?.teamId || entry?.id || entry?.teamNameNormalized || "";
+  const sourceSessionId = entry?.sourceSessionId || entry?.id || "";
+
+  if (!eventId || !teamId || !sourceSessionId) return "";
+
+  return `${eventId}__${teamId}__${sourceSessionId}`;
+}
+
+function buildVoucherEntries(sessions = [], voucherDocs = [], pubQuizzes = [], options = {}) {
+  const { visibleTeamId = null } = options;
   const voucherDocMap = new Map(voucherDocs.map((voucher) => [voucher.id, voucher]));
+  const voucherIdentityMap = new Map(
+    voucherDocs
+      .map((voucher) => [getVoucherIdentityKey(voucher), voucher])
+      .filter(([key]) => Boolean(key)),
+  );
+  const voucherEventRankMap = new Map(
+    voucherDocs
+      .map((voucher) => [getVoucherEventRankKey(voucher), voucher])
+      .filter(([key]) => Boolean(key)),
+  );
   const derivedEntries = sessions
     .filter((session) => [1, 2, 3].includes(Number(session?.rankDaily)))
     .map((session) => {
       const rank = Number(session.rankDaily);
+      const teamId = session.teamId || session.id || "";
+      const eventId = session.eventId || getEventId(session.lobbyCode || session.quizCode || "");
       const reward = getVoucherReward(rank);
       const id = getVoucherIdForSession(session);
-      const storedVoucher = voucherDocMap.get(id);
+      const eventRankKey = getVoucherEventRankKey({ eventId, rank });
+      const eventRankVoucher = voucherEventRankMap.get(eventRankKey);
+
+      if (
+        eventRankVoucher &&
+        eventRankVoucher.teamId &&
+        eventRankVoucher.teamId !== teamId
+      ) {
+        return null;
+      }
+
+      const identityKey = getVoucherIdentityKey({
+        ...session,
+        sourceSessionId: session.id,
+      });
+      const storedVoucher =
+        voucherDocMap.get(id) || (identityKey ? voucherIdentityMap.get(identityKey) : null);
 
       return {
         id,
-        eventId: session.eventId || null,
+        eventId: eventId || null,
         quizCode: session.quizCode || session.lobbyCode || "",
         quizLabel:
           storedVoucher?.quizLabel || getQuizLabelForSession(session, pubQuizzes),
@@ -939,15 +838,26 @@ function buildVoucherEntries(sessions = [], voucherDocs = [], pubQuizzes = []) {
         requestedAt: storedVoucher?.requestedAt || null,
         redeemedAt: storedVoucher?.redeemedAt || null,
         sourceSessionId: session.id,
-        teamId: session.teamId || session.id || "",
+        teamId,
         teamName: session.teamName || "",
         totalPoints: Number(session.totalPoints) || 0,
+        isManualAssignment: Boolean(storedVoucher?.manualAssignment),
+        isStored: Boolean(storedVoucher),
       };
-    });
+    })
+    .filter(Boolean);
 
   const existingIds = new Set(derivedEntries.map((entry) => entry.id));
+  const existingIdentityKeys = new Set(
+    derivedEntries.map((entry) => getVoucherIdentityKey(entry)).filter(Boolean),
+  );
   const docOnlyEntries = voucherDocs
-    .filter((voucher) => !existingIds.has(voucher.id))
+    .filter(
+      (voucher) =>
+        (!visibleTeamId || voucher.teamId === visibleTeamId) &&
+        !existingIds.has(voucher.id) &&
+        !existingIdentityKeys.has(getVoucherIdentityKey(voucher)),
+    )
     .map((voucher) => ({
       id: voucher.id,
       eventId: voucher.eventId || null,
@@ -964,10 +874,41 @@ function buildVoucherEntries(sessions = [], voucherDocs = [], pubQuizzes = []) {
       teamId: voucher.teamId || "",
       teamName: voucher.teamName || "",
       totalPoints: Number(voucher.totalPoints) || 0,
+      isManualAssignment: Boolean(voucher.manualAssignment),
+      isStored: true,
     }));
 
   return [...derivedEntries, ...docOnlyEntries].sort(
     (a, b) => getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt),
+  );
+}
+
+function buildAllVoucherEntries(allSessions = [], voucherDocs = [], pubQuizzes = []) {
+  const sessionsByTeam = new Map();
+  const teamIds = new Set();
+
+  allSessions.forEach((session) => {
+    const teamId = session.teamId || session.id || session.teamNameNormalized || "";
+
+    if (!teamId) return;
+
+    teamIds.add(teamId);
+    sessionsByTeam.set(teamId, [...(sessionsByTeam.get(teamId) || []), session]);
+  });
+
+  voucherDocs.forEach((voucher) => {
+    if (voucher.teamId) {
+      teamIds.add(voucher.teamId);
+    }
+  });
+
+  return Array.from(teamIds).flatMap((teamId) =>
+    buildVoucherEntries(
+      sessionsByTeam.get(teamId) || [],
+      voucherDocs,
+      pubQuizzes,
+      { visibleTeamId: teamId },
+    ),
   );
 }
 
@@ -2054,7 +1995,7 @@ function App() {
     const eventFinished =
       Boolean(finalRound) &&
       registeredTeams.length > 0 &&
-      registeredTeams.every((team) => isRoundFinished(team, finalRound, now, lobbyData));
+      registeredTeams.every((team) => isRoundFinished(team, finalRound, now, lobbyData, quizRounds));
     const nextAllTeams = allTeams.map((team) => {
       if (!eventFinished || team.lobbyCode !== sessionData.lobbyCode) {
         return team;
@@ -2322,6 +2263,7 @@ function App() {
           name: playerName.trim() || cleanedManagerKey,
           password: cleanedManagerPassword,
           active: true,
+          canEditScores: true,
           headManager: true,
         };
 
@@ -2343,12 +2285,14 @@ function App() {
         validatedManager = {
           id: managerSnapshot.id,
           ...managerData,
+          canEditScores: Boolean(managerData.canEditScores ?? managerData.headManager),
         };
 
         await setDoc(
           managerRef,
           createManagerRecord({
             active: managerData.active !== false,
+            canEditScores: Boolean(managerData.canEditScores ?? managerData.headManager),
             createdAt: managerData.createdAt,
             headManager: Boolean(managerData.headManager),
             key: cleanedManagerKey,
@@ -2462,6 +2406,7 @@ function App() {
             name: cleanedManagerKey,
             password: cleanedManagerPassword,
             active: true,
+            canEditScores: true,
           };
 
           await setDoc(managerRef, {
@@ -2481,6 +2426,7 @@ function App() {
           validatedManager = {
             id: managerSnapshot.id,
             ...managerData,
+            canEditScores: Boolean(managerData.canEditScores ?? managerData.headManager),
           };
 
           await updateDoc(managerRef, {
@@ -2826,7 +2772,7 @@ function App() {
     if (!sessionId || !sessionData?.lobbyCode) return;
 
     const finalRound = getLastQuizRound(quizRounds);
-    if (!finalRound || !isRoundFinished(sessionData, finalRound, now, lobbyData)) return;
+    if (!finalRound || !isRoundFinished(sessionData, finalRound, now, lobbyData, quizRounds)) return;
 
     try {
       await updateDoc(getEventRef(sessionData.lobbyCode), {
@@ -3107,7 +3053,13 @@ function App() {
         effectiveSessionId,
       );
       const alreadyStarted = Boolean(
-        getEffectiveRoundStartMs(effectiveSessionData, lobbyData, roundId, Date.now()),
+        getEffectiveRoundStartMs(
+          effectiveSessionData,
+          lobbyData,
+          roundId,
+          Date.now(),
+          quizRounds,
+        ),
       );
 
       if (alreadyStarted) {
@@ -3224,8 +3176,8 @@ function App() {
     teamId,
     teamName,
   }) {
-    if (!activeManager?.headManager || !sessionData?.lobbyCode || !teamId) {
-      return { ok: false, message: "Nur der Head Manager darf Punkte korrigieren." };
+    if (!activeManager?.canEditScores || !sessionData?.lobbyCode || !teamId) {
+      return { ok: false, message: "Dieser Manager darf keine Punkte korrigieren." };
     }
 
     const parsedPoints = Number(nextTotalPoints);
@@ -3281,8 +3233,8 @@ function App() {
     teamId,
     teamName,
   }) {
-    if (!activeManager?.headManager || !sessionData?.lobbyCode || !teamId || !questionId) {
-      return { ok: false, message: "Nur der Head Manager darf Fragen korrigieren." };
+    if (!activeManager?.canEditScores || !sessionData?.lobbyCode || !teamId || !questionId) {
+      return { ok: false, message: "Dieser Manager darf keine Fragen korrigieren." };
     }
 
     const parsedPoints = Number(nextPointsAwarded);
@@ -3372,7 +3324,7 @@ function App() {
     teamId,
     teamName,
   }) {
-    if (!activeManager || !sessionData?.lobbyCode || !teamId || !question?.id) {
+    if (!activeManager?.canEditScores || !sessionData?.lobbyCode || !teamId || !question?.id) {
       return { ok: false, message: "Manager-Antwort konnte nicht gespeichert werden." };
     }
 
@@ -3535,6 +3487,32 @@ function App() {
     }
   }
 
+  async function deletePubQuiz(quizId) {
+    if (!isAdmin) return false;
+
+    if (!activeManager?.headManager) {
+      setQuizManagerMessage("Nur du als Head Manager kannst Pubquizzes loeschen.");
+      return false;
+    }
+
+    const targetQuiz = pubQuizzes.find((pubQuiz) => pubQuiz.id === quizId);
+
+    if (!targetQuiz) {
+      setQuizManagerMessage("Dieses Pubquiz wurde bereits geloescht oder nicht gefunden.");
+      return false;
+    }
+
+    try {
+      await deleteDoc(doc(db, "pubQuizzes", quizId));
+      setQuizManagerMessage(`"${targetQuiz.title || "Unbenanntes Pubquiz"}" geloescht.`);
+      return true;
+    } catch (error) {
+      console.error("PUBQUIZ DELETE ERROR:", error);
+      setQuizManagerMessage(`Loeschen fehlgeschlagen: ${error.message}`);
+      return false;
+    }
+  }
+
   async function saveManager(managerDraft) {
     if (!activeManager) return;
 
@@ -3547,6 +3525,7 @@ function App() {
     const cleanedName = managerDraft.name?.trim() || cleanedKey;
     const cleanedPassword = managerDraft.password?.trim();
     const nextHeadManager = Boolean(managerDraft.headManager);
+    const canEditScores = Boolean(managerDraft.canEditScores ?? nextHeadManager);
 
     if (!cleanedKey || !cleanedPassword) {
       setQuizManagerMessage("Manager-Key und Passwort sind Pflicht.");
@@ -3561,6 +3540,7 @@ function App() {
           name: cleanedName,
           password: cleanedPassword,
           active: managerDraft.active !== false,
+          canEditScores,
           headManager: nextHeadManager,
           updatedAt: serverTimestamp(),
           createdAt: managerDraft.createdAt || serverTimestamp(),
@@ -3571,6 +3551,7 @@ function App() {
         setActiveManager((currentManager) => ({
           ...currentManager,
           active: managerDraft.active !== false,
+          canEditScores,
           headManager: nextHeadManager,
           key: cleanedKey,
           name: cleanedName,
@@ -3645,24 +3626,27 @@ function App() {
 
     const lobbyRef = getEventRef(sessionData.lobbyCode);
     const finalRound = getLastQuizRound(quizRounds);
-    const allTeamsFinished =
-      registeredTeams.length > 0 &&
-      registeredTeams.every((team) => isRoundFinished(team, finalRound, now, lobbyData));
-    const allTeamsReady =
-      allTeamsFinished &&
-      registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
-    const eligibleTiedTeams = Array.from(
-      new Map(
-        getDailyRankingWithTiebreakers(registeredTeams, lobbyData)
-          .tieGroups.flatMap((group) => group.teams)
-          .map((team) => [team.id, team]),
-      ).values(),
+    const questionPointsById = Object.fromEntries(
+      Object.entries(questions).map(([questionId, question]) => [
+        questionId,
+        Number(question?.points) || 0,
+      ]),
     );
+    const tiebreakerState = getTiebreakerState({
+      teams: registeredTeams,
+      lobbyData,
+      finalRound,
+      now,
+      isRoundFinished,
+      quizRounds,
+      questionPointsById,
+    });
+    const eligibleTiedTeams = tiebreakerState.tiedTeams;
     const allEligibleReady =
       eligibleTiedTeams.length > 0 &&
       eligibleTiedTeams.every((team) => Boolean(lobbyData?.tiebreakerReady?.[team.id]));
 
-    if (!allTeamsReady) {
+    if (!tiebreakerState.allRelevantTeamsFinishedFinalRound) {
       setQuizManagerMessage("Die Schätzfrage startet erst, wenn alle Teams nach Runde 3 bereit sind.");
       return;
     }
@@ -3695,25 +3679,27 @@ function App() {
     if (!sessionId || !sessionData?.lobbyCode) return;
 
     const lobbyRef = getEventRef(sessionData.lobbyCode);
-    const dailyRanking = getDailyRankingWithTiebreakers(registeredTeams, lobbyData);
     const finalRound = getLastQuizRound(quizRounds);
-    const eligibleIds = new Set(
-      dailyRanking.tieGroups.flatMap((group) =>
-        group.teams
-          .filter((team) => isRoundFinished(team, finalRound, now, lobbyData))
-          .map((team) => team.id),
-      ),
+    const questionPointsById = Object.fromEntries(
+      Object.entries(questions).map(([questionId, question]) => [
+        questionId,
+        Number(question?.points) || 0,
+      ]),
     );
+    const tiebreakerState = getTiebreakerState({
+      teams: registeredTeams,
+      lobbyData,
+      finalRound,
+      now,
+      isRoundFinished,
+      quizRounds,
+      questionPointsById,
+    });
+    const eligibleIds = new Set(tiebreakerState.tiedTeamIds);
     const nextReadyTeams = {
       ...(lobbyData?.tiebreakerReady || {}),
       [sessionId]: true,
     };
-    const allTeamsFinished =
-      registeredTeams.length > 0 &&
-      registeredTeams.every((team) => isRoundFinished(team, finalRound, now, lobbyData));
-    const allTeamsReady =
-      allTeamsFinished &&
-      registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
     const allEligibleReady =
       eligibleIds.size > 0 &&
       Array.from(eligibleIds).every((teamId) => nextReadyTeams[teamId]);
@@ -3738,7 +3724,7 @@ function App() {
             joinedAt: serverTimestamp(),
           },
           [`tiebreakerReady.${sessionId}`]: true,
-          ...(allTeamsReady && allEligibleReady
+          ...(tiebreakerState.allRelevantTeamsFinishedFinalRound && allEligibleReady
             ? {
                 tiebreakerStatus: "active",
                 tiebreakerStartedAt: serverTimestamp(),
@@ -3749,6 +3735,49 @@ function App() {
       });
     } catch (error) {
       console.error("TIEBREAKER READY ERROR:", error);
+    }
+  }
+
+  async function updateTeamPodiumExclusion({ teamId, teamName, excluded }) {
+    if (!activeManager || !sessionData?.lobbyCode || !teamId) {
+      return { ok: false, message: "Team konnte nicht aktualisiert werden." };
+    }
+
+    try {
+      await setDoc(
+        getEventRef(sessionData.lobbyCode),
+        {
+          tiebreakerExcludedTeams: {
+            [teamId]: excluded
+              ? {
+                  active: true,
+                  teamName: teamName || teamId,
+                  updatedAt: serverTimestamp(),
+                  updatedBy: activeManager.name || activeManager.id || "Manager",
+                  updatedById: activeManager.id || activeManager.key || "",
+                }
+              : {
+                  active: false,
+                  teamName: teamName || teamId,
+                  updatedAt: serverTimestamp(),
+                  updatedBy: activeManager.name || activeManager.id || "Manager",
+                  updatedById: activeManager.id || activeManager.key || "",
+                },
+          },
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      return {
+        ok: true,
+        message: excluded
+          ? `${teamName || teamId} blockiert das Podium nicht mehr.`
+          : `${teamName || teamId} ist wieder podiumsrelevant.`,
+      };
+    } catch (error) {
+      console.error("PODIUM EXCLUSION UPDATE ERROR:", error);
+      return { ok: false, message: `Status konnte nicht gespeichert werden: ${error.message}` };
     }
   }
 
@@ -3935,6 +3964,129 @@ function App() {
     }
   }
 
+  async function createVoucherAssignment({
+    awardedAt,
+    eventId,
+    quizCode,
+    quizLabel,
+    rank,
+    sourceSessionId,
+    teamId,
+    teamName,
+    totalPoints,
+  }) {
+    if (!isAdmin) {
+      return { ok: false, message: "Nur Manager koennen Gutscheine anlegen." };
+    }
+
+    if (!activeManager?.headManager) {
+      return { ok: false, message: "Nur du als Head Manager kannst Gutscheine anlegen." };
+    }
+
+    if (!eventId || !teamId || !teamName || ![1, 2, 3].includes(Number(rank))) {
+      return { ok: false, message: "Bitte Event, Team und Platz 1 bis 3 auswaehlen." };
+    }
+
+    const normalizedRank = Number(rank);
+    const vouchersForEvent = allVoucherDocs.filter(
+      (voucher) =>
+        (voucher.eventId || getEventId(voucher.quizCode || "")) === eventId &&
+        [1, 2, 3].includes(Number(voucher.rank)),
+    );
+    const existingRankVoucher = vouchersForEvent.find(
+      (voucher) => Number(voucher.rank) === normalizedRank,
+    );
+
+    if (existingRankVoucher) {
+      return {
+        ok: false,
+        message: `Fuer Platz ${normalizedRank} gibt es bei diesem Event schon einen Gutschein. Bitte zuerst den falschen Gutschein loeschen.`,
+      };
+    }
+
+    const assignedRanks = new Set(
+      vouchersForEvent
+        .map((voucher) => Number(voucher.rank))
+        .filter((currentRank) => [1, 2, 3].includes(currentRank)),
+    );
+
+    if (assignedRanks.size >= 3) {
+      return {
+        ok: false,
+        message: "Pro Event koennen maximal 3 Gutscheine vergeben werden. Bitte erst einen falschen Gutschein loeschen.",
+      };
+    }
+
+    const reward = getVoucherReward(normalizedRank);
+    const voucherId = `${eventId}__${teamId}__manual_rank${normalizedRank}`;
+
+    try {
+      await setDoc(
+        doc(db, "teams", teamId, "vouchers", voucherId),
+        {
+          id: voucherId,
+          eventId,
+          quizCode: quizCode || "",
+          quizLabel: quizLabel || quizCode || "Pubquiz",
+          teamId,
+          teamName,
+          rank: normalizedRank,
+          title: reward?.title || `Platz ${normalizedRank} Gutschein`,
+          description: reward?.description || "Manuell vergebener Gutschein",
+          totalPoints: Number(totalPoints) || 0,
+          sourceSessionId: sourceSessionId || "",
+          awardedAt: awardedAt || serverTimestamp(),
+          status: "earned",
+          manualAssignment: true,
+          createdAt: serverTimestamp(),
+          createdByManagerKey: activeManager.key || "",
+          createdByManagerName: activeManager.name || activeManager.key || "Head Manager",
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      return {
+        ok: true,
+        message: `${teamName} hat jetzt den Gutschein fuer Platz ${normalizedRank}.`,
+      };
+    } catch (error) {
+      console.error("VOUCHER CREATE ERROR:", error);
+      return {
+        ok: false,
+        message: `Gutschein konnte nicht angelegt werden: ${error.message}`,
+      };
+    }
+  }
+
+  async function deleteVoucherAssignment(voucher) {
+    if (!isAdmin) {
+      return { ok: false, message: "Nur Manager koennen Gutscheine loeschen." };
+    }
+
+    if (!activeManager?.headManager) {
+      return { ok: false, message: "Nur du als Head Manager kannst Gutscheine loeschen." };
+    }
+
+    if (!voucher?.id || !voucher?.teamId) {
+      return { ok: false, message: "Dieser Gutschein kann nicht geloescht werden." };
+    }
+
+    try {
+      await deleteDoc(doc(db, "teams", voucher.teamId, "vouchers", voucher.id));
+      return {
+        ok: true,
+        message: `${voucher.title || "Gutschein"} wurde geloescht.`,
+      };
+    } catch (error) {
+      console.error("VOUCHER DELETE ERROR:", error);
+      return {
+        ok: false,
+        message: `Gutschein konnte nicht geloescht werden: ${error.message}`,
+      };
+    }
+  }
+
   if (!sessionData) {
     return (
       <MobileLobbyScreen
@@ -3982,18 +4134,30 @@ function App() {
     isRoundUnlocked(lobbyData, round.id),
   );
   const finalRound = getLastQuizRound(quizRounds);
+  const questionPointsById = Object.fromEntries(
+    Object.entries(questions).map(([questionId, question]) => [
+      questionId,
+      Number(question?.points) || 0,
+    ]),
+  );
+  const tiebreakerState = getTiebreakerState({
+    teams: registeredTeams,
+    lobbyData,
+    finalRound,
+    now,
+    isRoundFinished,
+    quizRounds,
+    questionPointsById,
+  });
   const currentTeamFinishedFinalRound = isRoundFinished(
     sessionData,
     finalRound,
     now,
     lobbyData,
+    quizRounds,
   );
-  const allTeamsFinishedFinalRound =
-    registeredTeams.length > 0 &&
-    registeredTeams.every((team) => isRoundFinished(team, finalRound, now, lobbyData));
-  const allTeamsReadyForRanking =
-    allTeamsFinishedFinalRound &&
-    registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
+  const allTeamsFinishedFinalRound = tiebreakerState.allRelevantTeamsFinishedFinalRound;
+  const allTeamsReadyForRanking = allTeamsFinishedFinalRound;
   const issuedTeamPasswordModal = issuedTeamPassword ? (
     <TeamPasswordModal
       isLegacy={issuedTeamPassword.isLegacy}
@@ -4028,6 +4192,7 @@ function App() {
     return (
       <>
         <VoucherScreen
+          allVoucherDocs={allVoucherDocs}
           allTeamSessions={allTeamSessions}
           globalRankingRows={globalRankingRows}
           isAdmin={isAdmin}
@@ -4078,6 +4243,9 @@ function App() {
           now={now}
           onAddRoundExtraTime={addRoundExtraTime}
           onCloseNewRegistrations={closeNewRegistrations}
+          onCreateVoucherAssignment={createVoucherAssignment}
+          onDeletePubQuiz={deletePubQuiz}
+          onDeleteVoucherAssignment={deleteVoucherAssignment}
           onOpenAdmin={() => setAppView("admin")}
           onOpenMain={() => setAppView("main")}
           onOpenFaq={() => setAppView("faq")}
@@ -4088,6 +4256,7 @@ function App() {
           onSaveManager={saveManager}
           onSavePubQuiz={savePubQuiz}
           onSubmitManagerAnswerForTeam={submitManagerAnswerForTeam}
+          onUpdateTeamPodiumExclusion={updateTeamPodiumExclusion}
           onUpdateTeamQuestionScore={updateTeamQuestionScore}
           onUpdateTeamScore={updateTeamScore}
           onStartTiebreaker={startTiebreaker}
@@ -4167,12 +4336,7 @@ function App() {
         sessionId={sessionId}
         teamFinalReady={Boolean(lobbyData?.finalReady?.[sessionId])}
         tiebreakerClientId={clientId}
-        tiebreakerEligible={getDailyRankingWithTiebreakers(
-          registeredTeams,
-          lobbyData,
-        ).tieGroups.some((group) =>
-          group.teams.some((team) => team.id === sessionId),
-        )}
+        tiebreakerEligible={tiebreakerState.tiedTeamIds.includes(sessionId)}
         tiebreakerFinalRoundFinished={currentTeamFinishedFinalRound}
       />
       {issuedTeamPasswordModal}
@@ -6030,6 +6194,7 @@ function FaqScreen({
 }
 
 function VoucherScreen({
+  allVoucherDocs = [],
   allTeamSessions,
   globalRankingRows,
   isAdmin,
@@ -6044,14 +6209,15 @@ function VoucherScreen({
   teamSessionId,
   onUpdateVoucherStatus,
 }) {
-  const [voucherDocs, setVoucherDocs] = useState([]);
   const [voucherMessage, setVoucherMessage] = useState("");
   const isNarrow = useIsNarrowScreen();
   const teamId =
     sessionData?.teamId || teamSessionId || sessionData?.teamNameNormalized || "";
   const teamProfile = teamProfiles.find((profile) => profile.id === teamId);
   const teamName = sessionData?.teamName || teamProfile?.teamName || teamProfile?.name || "";
-  const vouchers = buildVoucherEntries(teamHistorySessions, voucherDocs, pubQuizzes);
+  const vouchers = buildVoucherEntries(teamHistorySessions, allVoucherDocs, pubQuizzes, {
+    visibleTeamId: teamId || null,
+  });
   const wonVoucherCount = vouchers.length;
   const redeemedVoucherCount = vouchers.filter(
     (voucher) => voucher.status === "redeemed",
@@ -6060,21 +6226,6 @@ function VoucherScreen({
     globalRankingRows.find((row) => row.teamId === teamId)?.totalGlobalPoints ||
     teamProfile?.totalGlobalPoints ||
     0;
-
-  useEffect(() => {
-    if (!teamId) {
-      setVoucherDocs([]);
-      return undefined;
-    }
-
-    const vouchersRef = collection(db, "teams", teamId, "vouchers");
-
-    return onSnapshot(vouchersRef, (snapshot) => {
-      setVoucherDocs(
-        snapshot.docs.map((voucherDoc) => ({ id: voucherDoc.id, ...voucherDoc.data() })),
-      );
-    });
-  }, [teamId]);
 
   return (
     <main style={pageStyle}>
@@ -6240,6 +6391,9 @@ function AdminScreen({
   now,
   onAddRoundExtraTime,
   onCloseNewRegistrations,
+  onCreateVoucherAssignment,
+  onDeletePubQuiz,
+  onDeleteVoucherAssignment,
   onOpenAdmin,
   onOpenFaq,
   onOpenMain,
@@ -6252,6 +6406,7 @@ function AdminScreen({
   onSavePubQuiz,
   onRoundChange,
   onSubmitManagerAnswerForTeam,
+  onUpdateTeamPodiumExclusion,
   onUpdateTeamQuestionScore,
   onUpdateTeamScore,
   onUnlockRound,
@@ -6274,7 +6429,13 @@ function AdminScreen({
   const roundUnlocked = isRoundUnlocked(lobbyData, selectedRound.id);
   const answersRevealed = isRoundAnswersRevealed(lobbyData, selectedRound.id);
   const teamStatuses = registeredTeams.map((team) => {
-    const startMs = getEffectiveRoundStartMs(team, lobbyData, selectedRound.id, now);
+    const startMs = getEffectiveRoundStartMs(
+      team,
+      lobbyData,
+      selectedRound.id,
+      now,
+      quizRounds,
+    );
     const durationMs = getRoundDurationMs(selectedRound, lobbyData);
     const remainingMs = startMs === null ? null : startMs + durationMs - now;
     const expired = startMs !== null && remainingMs <= 0;
@@ -6282,6 +6443,7 @@ function AdminScreen({
     return {
       ...team,
       expired,
+      podiumExcluded: Boolean(lobbyData?.tiebreakerExcludedTeams?.[team.id]?.active),
       remainingMs,
       started: startMs !== null,
     };
@@ -6290,6 +6452,7 @@ function AdminScreen({
   const tabs = [
     ["live", "Live-Steuerung"],
     ["teams", "Teamarchiv"],
+    ["vouchers", "Alle Gutscheine"],
     ["feedback", "Meinungen"],
     ...(canManageManagers ? [["managers", "Manager"]] : []),
     ["quizzes", "Pubquizzes"],
@@ -6371,6 +6534,7 @@ function AdminScreen({
             onReopenNewRegistrations={onReopenNewRegistrations}
             onRoundChange={onRoundChange}
             onSubmitManagerAnswerForTeam={onSubmitManagerAnswerForTeam}
+            onUpdateTeamPodiumExclusion={onUpdateTeamPodiumExclusion}
             onUpdateTeamQuestionScore={onUpdateTeamQuestionScore}
             onUpdateTeamScore={onUpdateTeamScore}
             onUnlockRound={onUnlockRound}
@@ -6381,16 +6545,25 @@ function AdminScreen({
           />
         ) : personalTab === "teams" ? (
           <TeamDirectory
-            activeManager={activeManager}
             allVoucherDocs={allVoucherDocs}
             globalRankingRows={globalRankingRows}
-            onUpdateVoucherStatus={onUpdateVoucherStatus}
             pubQuizzes={pubQuizzes}
             teamProfiles={teamProfiles}
             teams={allTeamSessions.length ? allTeamSessions : allTeams}
           />
         ) : personalTab === "feedback" ? (
           <FeedbackInbox entries={feedbackEntries} />
+        ) : personalTab === "vouchers" ? (
+          <VoucherDirectory
+            activeManager={activeManager}
+            allTeamSessions={allTeamSessions}
+            allVoucherDocs={allVoucherDocs}
+            onCreateVoucherAssignment={onCreateVoucherAssignment}
+            onDeleteVoucherAssignment={onDeleteVoucherAssignment}
+            onUpdateVoucherStatus={onUpdateVoucherStatus}
+            pubQuizzes={pubQuizzes}
+            teamProfiles={teamProfiles}
+          />
         ) : personalTab === "managers" && canManageManagers ? (
           <ManagerDirectory
             activeManager={activeManager}
@@ -6400,7 +6573,9 @@ function AdminScreen({
           />
         ) : (
           <PubQuizManager
+            activeManager={activeManager}
             message={quizManagerMessage}
+            onDeletePubQuiz={onDeletePubQuiz}
             onLoadPubQuizByCode={onLoadPubQuizByCode}
             onSavePubQuiz={onSavePubQuiz}
             pubQuizzes={pubQuizzes}
@@ -6593,6 +6768,553 @@ function TiebreakerPanel({
   );
 }
 
+function VoucherDirectory({
+  activeManager,
+  allTeamSessions = [],
+  allVoucherDocs = [],
+  onCreateVoucherAssignment,
+  onDeleteVoucherAssignment,
+  onUpdateVoucherStatus,
+  pubQuizzes = [],
+  teamProfiles = [],
+}) {
+  const [viewMode, setViewMode] = useState("event");
+  const [selectedEventId, setSelectedEventId] = useState(null);
+  const [selectedTeamId, setSelectedTeamId] = useState(null);
+  const [selectedCreateRank, setSelectedCreateRank] = useState("1");
+  const [selectedCreateTeamId, setSelectedCreateTeamId] = useState("");
+  const [voucherMessage, setVoucherMessage] = useState("");
+  const isNarrow = useIsNarrowScreen();
+  const canEditVouchers = Boolean(activeManager?.headManager);
+  const allEffectiveVouchers = buildAllVoucherEntries(
+    allTeamSessions,
+    allVoucherDocs,
+    pubQuizzes,
+  );
+  const teamDirectory = aggregateTeamDirectory(allTeamSessions, teamProfiles);
+  const eventSummaries = Array.from(
+    [...allTeamSessions, ...allVoucherDocs].reduce((map, entry) => {
+      const eventId = entry.eventId || getEventId(entry.quizCode || entry.lobbyCode || "");
+
+      if (!eventId) return map;
+
+      const current = map.get(eventId) || {
+        eventId,
+        quizCode: entry.quizCode || entry.lobbyCode || "",
+        quizLabel: getQuizLabelForSession(entry, pubQuizzes),
+        awardedAt: entry.awardedAt || getCompletionValue(entry) || entry.createdAt || null,
+      };
+      const nextAwardedAt =
+        getTimestampMs(entry.awardedAt || getCompletionValue(entry) || entry.createdAt) >
+        getTimestampMs(current.awardedAt)
+          ? entry.awardedAt || getCompletionValue(entry) || entry.createdAt || null
+          : current.awardedAt;
+
+      map.set(eventId, {
+        ...current,
+        quizCode: current.quizCode || entry.quizCode || entry.lobbyCode || "",
+        quizLabel: current.quizLabel || getQuizLabelForSession(entry, pubQuizzes),
+        awardedAt: nextAwardedAt,
+      });
+
+      return map;
+    }, new Map()).values(),
+  ).sort((a, b) => getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt));
+  const selectedEvent =
+    eventSummaries.find((event) => event.eventId === selectedEventId) || eventSummaries[0] || null;
+  const selectedEventSessions = mergeSessionParticipation(
+    allTeamSessions.filter((session) => session.eventId === selectedEvent?.eventId),
+  ).sort((a, b) => {
+    const rankDifference =
+      (Number(a.rankDaily) || Number.MAX_SAFE_INTEGER) -
+      (Number(b.rankDaily) || Number.MAX_SAFE_INTEGER);
+
+    if (rankDifference !== 0) return rankDifference;
+
+    return (
+      (Number(b.totalPoints) || 0) - (Number(a.totalPoints) || 0) ||
+      (a.teamName || "").localeCompare(b.teamName || "")
+    );
+  });
+  const selectedEventVouchers = allEffectiveVouchers
+    .filter((voucher) => voucher.eventId === selectedEvent?.eventId)
+    .sort(
+      (a, b) =>
+        (Number(a.rank) || Number.MAX_SAFE_INTEGER) -
+          (Number(b.rank) || Number.MAX_SAFE_INTEGER) ||
+        (a.teamName || "").localeCompare(b.teamName || ""),
+    );
+  const selectedTeam =
+    teamDirectory.find((team) => team.id === selectedTeamId) || teamDirectory[0] || null;
+  const selectedTeamVouchers = selectedTeam
+    ? buildVoucherEntries(
+        selectedTeam.sessions || [],
+        allVoucherDocs,
+        pubQuizzes,
+        { visibleTeamId: selectedTeam.id },
+      )
+    : [];
+
+  useEffect(() => {
+    if (!eventSummaries.some((event) => event.eventId === selectedEventId)) {
+      setSelectedEventId(eventSummaries[0]?.eventId || null);
+    }
+  }, [eventSummaries, selectedEventId]);
+
+  useEffect(() => {
+    if (!teamDirectory.some((team) => team.id === selectedTeamId)) {
+      setSelectedTeamId(teamDirectory[0]?.id || null);
+    }
+  }, [selectedTeamId, teamDirectory]);
+
+  useEffect(() => {
+    if (!selectedEventSessions.some((team) => (team.teamId || team.id) === selectedCreateTeamId)) {
+      setSelectedCreateTeamId(selectedEventSessions[0]?.teamId || selectedEventSessions[0]?.id || "");
+    }
+  }, [selectedCreateTeamId, selectedEventSessions]);
+
+  async function handleCreateVoucher() {
+    const targetTeam = selectedEventSessions.find(
+      (team) => (team.teamId || team.id) === selectedCreateTeamId,
+    );
+
+    if (!selectedEvent || !targetTeam) {
+      setVoucherMessage("Bitte zuerst ein Event und ein Team auswaehlen.");
+      return;
+    }
+
+    const result = await onCreateVoucherAssignment?.({
+      awardedAt:
+        getCompletionValue(targetTeam) ||
+        selectedEvent.awardedAt ||
+        serverTimestamp(),
+      eventId: selectedEvent.eventId,
+      quizCode: selectedEvent.quizCode,
+      quizLabel: selectedEvent.quizLabel,
+      rank: Number(selectedCreateRank),
+      sourceSessionId: targetTeam.id || "",
+      teamId: targetTeam.teamId || targetTeam.id || "",
+      teamName: targetTeam.teamName || "",
+      totalPoints: Number(targetTeam.totalPoints) || 0,
+    });
+
+    if (result?.message) {
+      setVoucherMessage(result.message);
+    }
+  }
+
+  function renderVoucherActions(voucher, sourceSession) {
+    if (!canEditVouchers) return null;
+
+    return (
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+        {voucher.status !== "redeemed" && onUpdateVoucherStatus && (
+          <button
+            type="button"
+            onClick={async () => {
+              const result = await onUpdateVoucherStatus({
+                voucher,
+                nextStatus: "redeemed",
+                sourceSession,
+                teamId: voucher.teamId,
+                teamName: voucher.teamName,
+              });
+              setVoucherMessage(result.message);
+            }}
+          >
+            Als eingeloest markieren
+          </button>
+        )}
+        {voucher.status === "redeemed" && onUpdateVoucherStatus && (
+          <button
+            type="button"
+            onClick={async () => {
+              const result = await onUpdateVoucherStatus({
+                voucher,
+                nextStatus: "earned",
+                sourceSession,
+                teamId: voucher.teamId,
+                teamName: voucher.teamName,
+              });
+              setVoucherMessage(result.message);
+            }}
+            style={{ background: "#1e293b", color: "#e2e8f0" }}
+          >
+            Einloesung zuruecknehmen
+          </button>
+        )}
+        {voucher.isStored && onDeleteVoucherAssignment && (
+          <button
+            type="button"
+            onClick={async () => {
+              const result = await onDeleteVoucherAssignment(voucher);
+              setVoucherMessage(result.message);
+            }}
+            style={{
+              border: "1px solid rgba(248, 113, 113, 0.45)",
+              background: "rgba(127, 29, 29, 0.35)",
+              color: "#fecaca",
+            }}
+          >
+            Gutschein loeschen
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <section style={{ marginTop: 24 }}>
+      <h2>Alle Gutscheine</h2>
+      <p style={{ marginTop: 0, color: "#94a3b8" }}>
+        Alle Podiums-Gutscheine im Ueberblick, sortiert nach Event oder Team. Nur der
+        Head Manager kann Gutscheine anlegen, loeschen oder den Status aendern.
+      </p>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+        {[
+          ["event", "Pro Event"],
+          ["team", "Pro Team"],
+        ].map(([mode, label]) => {
+          const isSelected = viewMode === mode;
+
+          return (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setViewMode(mode)}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 999,
+                border: `1px solid ${isSelected ? "#38bdf8" : "#334155"}`,
+                background: isSelected ? "#082f49" : "#020617",
+                color: isSelected ? "#e0f2fe" : "#cbd5e1",
+                fontWeight: 700,
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {viewMode === "event" ? (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: isNarrow ? "1fr" : "minmax(260px, 0.95fr) minmax(0, 1.45fr)",
+            gap: 16,
+            alignItems: "start",
+          }}
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            {eventSummaries.length === 0 ? (
+              <p style={{ color: "#94a3b8" }}>
+                Noch keine Events mit Gutscheinen oder Teamdaten vorhanden.
+              </p>
+            ) : (
+              eventSummaries.map((event) => {
+                const isSelected = selectedEvent?.eventId === event.eventId;
+                const voucherCount = allEffectiveVouchers.filter(
+                  (voucher) => voucher.eventId === event.eventId,
+                ).length;
+
+                return (
+                  <button
+                    key={event.eventId}
+                    type="button"
+                    onClick={() => setSelectedEventId(event.eventId)}
+                    style={{
+                      padding: 12,
+                      border: `1px solid ${isSelected ? "#38bdf8" : "#1f2937"}`,
+                      borderRadius: 12,
+                      background: isSelected ? "#082f49" : "#0b1220",
+                      color: "#e5e7eb",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <strong>{event.quizLabel || event.quizCode || event.eventId}</strong>
+                    <span style={{ display: "block", marginTop: 4, color: "#94a3b8" }}>
+                      {formatCompletionDate(event.awardedAt)} - {voucherCount}/3 Gutscheine
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          {selectedEvent && (
+            <div
+              style={{
+                padding: 16,
+                border: "1px solid #334155",
+                borderRadius: 14,
+                background: "#0b1220",
+              }}
+            >
+              <h3 style={{ marginTop: 0 }}>{selectedEvent.quizLabel || "Pubquiz"}</h3>
+              <p style={{ color: "#cbd5e1" }}>
+                Code <strong>{selectedEvent.quizCode || "?"}</strong> - Event{" "}
+                <strong>{formatCompletionDate(selectedEvent.awardedAt)}</strong>
+              </p>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: isNarrow ? "1fr" : "1fr 120px auto",
+                  gap: 10,
+                  marginTop: 16,
+                  padding: 14,
+                  border: "1px solid #1f2937",
+                  borderRadius: 12,
+                  background: "#020617",
+                }}
+              >
+                <label style={{ display: "grid", gap: 6 }}>
+                  <span>Team fuer Gutschein</span>
+                  <select
+                    disabled={!canEditVouchers}
+                    value={selectedCreateTeamId}
+                    onChange={(event) => setSelectedCreateTeamId(event.target.value)}
+                    style={inputStyle}
+                  >
+                    {selectedEventSessions.map((team) => (
+                      <option key={team.teamId || team.id} value={team.teamId || team.id}>
+                        {team.teamName} - {team.totalPoints || 0} Punkte
+                        {team.rankDaily ? ` - Platz ${team.rankDaily}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label style={{ display: "grid", gap: 6 }}>
+                  <span>Platz</span>
+                  <select
+                    disabled={!canEditVouchers}
+                    value={selectedCreateRank}
+                    onChange={(event) => setSelectedCreateRank(event.target.value)}
+                    style={inputStyle}
+                  >
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  disabled={!canEditVouchers || !selectedEventSessions.length}
+                  onClick={handleCreateVoucher}
+                  style={{
+                    alignSelf: "end",
+                    padding: "12px 16px",
+                    border: "none",
+                    borderRadius: 12,
+                    background:
+                      canEditVouchers && selectedEventSessions.length ? "#22c55e" : "#334155",
+                    color:
+                      canEditVouchers && selectedEventSessions.length ? "#0b1220" : "#94a3b8",
+                    fontWeight: 700,
+                    cursor:
+                      canEditVouchers && selectedEventSessions.length ? "pointer" : "not-allowed",
+                  }}
+                >
+                  Gutschein anlegen
+                </button>
+              </div>
+
+              <h4 style={{ marginBottom: 10 }}>Aktuelle Gutscheine</h4>
+              {selectedEventVouchers.length === 0 ? (
+                <p style={{ color: "#94a3b8" }}>
+                  Fuer dieses Event wurden noch keine Gutscheine erfasst.
+                </p>
+              ) : (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {selectedEventVouchers.map((voucher) => {
+                    const sourceSession = selectedEventSessions.find(
+                      (session) => (session.teamId || session.id) === voucher.teamId,
+                    );
+
+                    return (
+                      <article
+                        key={voucher.id}
+                        style={{
+                          padding: 12,
+                          border: "1px solid #1f2937",
+                          borderRadius: 12,
+                          background: "#020617",
+                        }}
+                      >
+                        <strong>
+                          Platz {voucher.rank}: {voucher.teamName}
+                        </strong>
+                        <span style={{ display: "block", marginTop: 6, color: "#cbd5e1" }}>
+                          {voucher.title} - {voucher.description}
+                        </span>
+                        <span style={{ display: "block", marginTop: 6, color: "#94a3b8" }}>
+                          {voucher.totalPoints || 0} Punkte - Status{" "}
+                          <strong>
+                            {voucher.status === "redeemed"
+                              ? "eingeloest"
+                              : voucher.status === "requested"
+                                ? "angefragt"
+                                : "offen"}
+                          </strong>
+                          {voucher.isManualAssignment
+                            ? " - manuell gesetzt"
+                            : voucher.isStored
+                              ? " - gespeichert"
+                              : " - aus Ranking"}
+                        </span>
+                        {renderVoucherActions(voucher, sourceSession)}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+
+              <h4 style={{ marginBottom: 10, marginTop: 18 }}>Event-Teams</h4>
+              {selectedEventSessions.length === 0 ? (
+                <p style={{ color: "#94a3b8" }}>
+                  Zu diesem Event wurden noch keine Teams gefunden.
+                </p>
+              ) : (
+                <div style={{ display: "grid", gap: 8 }}>
+                  {selectedEventSessions.map((team) => (
+                    <div
+                      key={team.teamId || team.id}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: isNarrow ? "1fr" : "1fr auto auto",
+                        gap: 10,
+                        padding: 10,
+                        border: "1px solid #1f2937",
+                        borderRadius: 10,
+                        background: "#020617",
+                      }}
+                    >
+                      <strong>{team.teamName}</strong>
+                      <span style={{ color: "#cbd5e1" }}>{team.totalPoints || 0} Punkte</span>
+                      <span style={{ color: "#94a3b8" }}>
+                        {team.rankDaily ? `Platz ${team.rankDaily}` : "ohne Platz"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: isNarrow ? "1fr" : "minmax(260px, 0.95fr) minmax(0, 1.45fr)",
+            gap: 16,
+            alignItems: "start",
+          }}
+        >
+          <div style={{ display: "grid", gap: 10 }}>
+            {teamDirectory.length === 0 ? (
+              <p style={{ color: "#94a3b8" }}>Noch keine Teams vorhanden.</p>
+            ) : (
+              teamDirectory.map((team) => {
+                const isSelected = selectedTeam?.id === team.id;
+                const voucherCount = allEffectiveVouchers.filter(
+                  (voucher) => voucher.teamId === team.id,
+                ).length;
+
+                return (
+                  <button
+                    key={team.id}
+                    type="button"
+                    onClick={() => setSelectedTeamId(team.id)}
+                    style={{
+                      padding: 12,
+                      border: `1px solid ${isSelected ? "#38bdf8" : "#1f2937"}`,
+                      borderRadius: 12,
+                      background: isSelected ? "#082f49" : "#0b1220",
+                      color: "#e5e7eb",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <strong>{team.teamName}</strong>
+                    <span style={{ display: "block", marginTop: 4, color: "#94a3b8" }}>
+                      {voucherCount} Gutschein{voucherCount === 1 ? "" : "e"} -{" "}
+                      {(team.gamesPlayed ?? team.sessions.length)} Teilnahmen
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+
+          {selectedTeam && (
+            <div
+              style={{
+                padding: 16,
+                border: "1px solid #334155",
+                borderRadius: 14,
+                background: "#0b1220",
+              }}
+            >
+              <h3 style={{ marginTop: 0 }}>{selectedTeam.teamName}</h3>
+              <p style={{ color: "#cbd5e1" }}>
+                Teilnahmen <strong>{selectedTeam.gamesPlayed ?? selectedTeam.sessions.length}</strong>
+              </p>
+              {selectedTeamVouchers.length === 0 ? (
+                <p style={{ color: "#94a3b8" }}>Dieses Team hat bisher keinen Gutschein.</p>
+              ) : (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {selectedTeamVouchers.map((voucher) => {
+                    const sourceSession = (selectedTeam.sessions || []).find(
+                      (session) =>
+                        session.id === voucher.sourceSessionId ||
+                        getVoucherIdForSession(session) === voucher.id,
+                    );
+
+                    return (
+                      <article
+                        key={voucher.id}
+                        style={{
+                          padding: 12,
+                          border: "1px solid #1f2937",
+                          borderRadius: 12,
+                          background: "#020617",
+                        }}
+                      >
+                        <strong>
+                          {voucher.quizLabel} - Platz {voucher.rank}
+                        </strong>
+                        <span style={{ display: "block", marginTop: 6, color: "#cbd5e1" }}>
+                          {voucher.title}
+                        </span>
+                        <span style={{ display: "block", marginTop: 6, color: "#94a3b8" }}>
+                          {voucher.totalPoints || 0} Punkte - Status{" "}
+                          <strong>
+                            {voucher.status === "redeemed"
+                              ? "eingeloest"
+                              : voucher.status === "requested"
+                                ? "angefragt"
+                                : "offen"}
+                          </strong>
+                        </span>
+                        {renderVoucherActions(voucher, sourceSession)}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {voucherMessage && <p style={{ color: "#93c5fd", marginTop: 14 }}>{voucherMessage}</p>}
+    </section>
+  );
+}
+
 function TeamDirectory({
   activeManager,
   allVoucherDocs = [],
@@ -6604,7 +7326,6 @@ function TeamDirectory({
 }) {
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
-  const [selectedTeamVoucherDocs, setSelectedTeamVoucherDocs] = useState([]);
   const [selectedAnswerRoundId, setSelectedAnswerRoundId] = useState(null);
   const [teamSearch, setTeamSearch] = useState("");
   const [voucherMessage, setVoucherMessage] = useState("");
@@ -6629,8 +7350,9 @@ function TeamDirectory({
 
       const derivedVouchers = buildVoucherEntries(
         team.sessions || [],
-        teamVoucherMap.get(team.id) || [],
+        allVoucherDocs,
         pubQuizzes,
+        { visibleTeamId: team.id },
       );
 
       if (derivedVouchers.length === 0) return false;
@@ -6664,8 +7386,9 @@ function TeamDirectory({
   const selectedSessions = selectedTeam?.sessions || [];
   const selectedTeamVouchers = buildVoucherEntries(
     selectedSessions,
-    selectedTeamVoucherDocs,
+    allVoucherDocs,
     pubQuizzes,
+    { visibleTeamId: selectedTeam?.id || null },
   );
   const selectedSession =
     selectedSessions.find((session) => session.sessionKey === selectedSessionId) ||
@@ -6709,21 +7432,6 @@ function TeamDirectory({
   useEffect(() => {
     setSelectedAnswerRoundId(selectedQuizQuestionsByRound[0]?.id || null);
   }, [selectedSession?.id, selectedPubQuiz?.id]);
-
-  useEffect(() => {
-    if (!selectedTeam?.id) {
-      setSelectedTeamVoucherDocs([]);
-      return undefined;
-    }
-
-    const vouchersRef = collection(db, "teams", selectedTeam.id, "vouchers");
-
-    return onSnapshot(vouchersRef, (snapshot) => {
-      setSelectedTeamVoucherDocs(
-        snapshot.docs.map((voucherDoc) => ({ id: voucherDoc.id, ...voucherDoc.data() })),
-      );
-    });
-  }, [selectedTeam?.id]);
 
   return (
     <section style={{ marginTop: 24 }}>
@@ -7254,6 +7962,7 @@ function ManagerDirectory({ activeManager, managers, message, onSaveManager }) {
   const isNarrow = useIsNarrowScreen();
   const [draft, setDraft] = useState({
     active: true,
+    canEditScores: false,
     headManager: false,
     key: "",
     name: "",
@@ -7263,6 +7972,7 @@ function ManagerDirectory({ activeManager, managers, message, onSaveManager }) {
   function editManager(manager) {
     setDraft({
       active: manager.active !== false,
+      canEditScores: Boolean(manager.canEditScores ?? manager.headManager),
       createdAt: manager.createdAt,
       headManager: Boolean(manager.headManager),
       key: manager.key || manager.id,
@@ -7276,6 +7986,7 @@ function ManagerDirectory({ activeManager, managers, message, onSaveManager }) {
     await onSaveManager(draft);
     setDraft({
       active: true,
+      canEditScores: false,
       headManager: false,
       key: "",
       name: "",
@@ -7327,6 +8038,7 @@ function ManagerDirectory({ activeManager, managers, message, onSaveManager }) {
                   Key: {manager.key || manager.id} -{" "}
                   {manager.active === false ? "inaktiv" : "aktiv"}
                   {manager.headManager ? " - Head Manager" : ""}
+                  {manager.canEditScores ? " - Score-Editing an" : ""}
                 </span>
               </button>
             ))
@@ -7394,6 +8106,19 @@ function ManagerDirectory({ activeManager, managers, message, onSaveManager }) {
           <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <input
               type="checkbox"
+              checked={draft.canEditScores}
+              onChange={(e) =>
+                setDraft((current) => ({
+                  ...current,
+                  canEditScores: e.target.checked,
+                }))
+              }
+            />
+            Darf Scores bearbeiten
+          </label>
+          <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input
+              type="checkbox"
               checked={draft.headManager}
               onChange={(e) =>
                 setDraft((current) => ({
@@ -7437,6 +8162,7 @@ function LiveControlPanel({
   onReopenNewRegistrations,
   onRoundChange,
   onSubmitManagerAnswerForTeam,
+  onUpdateTeamPodiumExclusion,
   onUpdateTeamQuestionScore,
   onUpdateTeamScore,
   onUnlockRound,
@@ -7453,15 +8179,13 @@ function LiveControlPanel({
   const [questionScoreDrafts, setQuestionScoreDrafts] = useState({});
   const [questionNoteDrafts, setQuestionNoteDrafts] = useState({});
   const [questionMessages, setQuestionMessages] = useState({});
+  const [podiumMessage, setPodiumMessage] = useState("");
   const [teamSearch, setTeamSearch] = useState("");
   const roundUnlocked = canRevealAnswers || answersRevealed;
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
   const isNarrow = useIsNarrowScreen();
   const roundExtraMinutes = getRoundExtraMinutes(lobbyData, selectedRound.id);
-  const roundUnlockMs = getRoundUnlockMs(lobbyData, selectedRound.id);
-  const roundStartWindowExpired =
-    Boolean(roundUnlockMs) && now > roundUnlockMs + ROUND_START_WINDOW_MS;
   const extraTimeLimitReached = roundExtraMinutes >= 30;
   const registrationClosed = isNewTeamJoinClosed(lobbyData, now);
   const emergencyJoinWindowEndsMs = getEmergencyJoinWindowEndsMs(lobbyData);
@@ -7480,7 +8204,7 @@ function LiveControlPanel({
     visibleTeamStatuses[0] ||
     null;
   const selectedQuestionIds = selectedQuestions.map((question) => question.id);
-  const canEditScores = Boolean(activeManager?.headManager && onUpdateTeamScore);
+  const canEditScores = Boolean(activeManager?.canEditScores && onUpdateTeamScore);
 
   useEffect(() => {
     if (!visibleTeamStatuses.some((team) => team.id === selectedTeamId)) {
@@ -7584,6 +8308,19 @@ function LiveControlPanel({
     }));
   }
 
+  async function handlePodiumExclusionToggle() {
+    if (!selectedTeam || !onUpdateTeamPodiumExclusion) return;
+
+    const excluded = !selectedTeam.podiumExcluded;
+    const result = await onUpdateTeamPodiumExclusion({
+      teamId: selectedTeam.id,
+      teamName: selectedTeam.teamName,
+      excluded,
+    });
+
+    setPodiumMessage(result.message);
+  }
+
   return (
     <>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 24 }}>
@@ -7650,14 +8387,10 @@ function LiveControlPanel({
                 })}`
               : ""}
           </p>
-          <p style={{ color: roundStartWindowExpired ? "#fca5a5" : "#cbd5e1" }}>
+          <p style={{ color: "#cbd5e1" }}>
             Startfenster fuer Teams:{" "}
             <strong>
-              {roundUnlockMs
-                ? roundStartWindowExpired
-                  ? "abgelaufen"
-                  : "10 Minuten nach Freischaltung"
-                : "startet mit der Freischaltung"}
+              10 Minuten nach Team-Startfreigabe
             </strong>
           </p>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -7780,6 +8513,11 @@ function LiveControlPanel({
                     <span style={{ color: "#94a3b8", fontSize: 14 }}>
                       {answeredCount}/{selectedQuestionIds.length} Antworten in dieser Runde
                     </span>
+                    {team.podiumExcluded && (
+                      <span style={{ color: "#fca5a5", fontSize: 13, fontWeight: 700 }}>
+                        Von Podiumsrelevanz ausgenommen
+                      </span>
+                    )}
                     {team.scoreAdjustment?.active && (
                       <span style={{ color: "#fbbf24", fontSize: 13, fontWeight: 700 }}>
                         Score manuell geaendert
@@ -7883,6 +8621,48 @@ function LiveControlPanel({
                     ),
                   ).join(", ") || "keine Namen gespeichert"}
                 </p>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gap: 10,
+                    marginBottom: 16,
+                    padding: 12,
+                    border: "1px solid #334155",
+                    borderRadius: 10,
+                    background: "#020617",
+                  }}
+                >
+                  <strong>Podiumsrelevanz</strong>
+                  <span style={{ color: selectedTeam.podiumExcluded ? "#fca5a5" : "#cbd5e1" }}>
+                    {selectedTeam.podiumExcluded
+                      ? "Dieses Team ist als abgebrochen markiert und blockiert die Schätzfrage nicht."
+                      : "Dieses Team zählt normal für die Podiums- und Schätzfrage-Logik."}
+                  </span>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <button
+                      onClick={handlePodiumExclusionToggle}
+                      style={{
+                        padding: "10px 14px",
+                        borderRadius: 12,
+                        border: "none",
+                        background: selectedTeam.podiumExcluded ? "#22c55e" : "#ef4444",
+                        color: selectedTeam.podiumExcluded ? "#052e16" : "#fff7ed",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {selectedTeam.podiumExcluded
+                        ? "Wieder podiumsrelevant machen"
+                        : "Als abgebrochen markieren"}
+                    </button>
+                    {podiumMessage && (
+                      <span style={{ alignSelf: "center", color: "#93c5fd" }}>
+                        {podiumMessage}
+                      </span>
+                    )}
+                  </div>
+                </div>
 
                 {selectedTeam.scoreAdjustment?.active && (
                   <div
@@ -8335,11 +9115,20 @@ function PubQuizQrPanel({ quizCode }) {
   );
 }
 
-function PubQuizManager({ message, onLoadPubQuizByCode, onSavePubQuiz, pubQuizzes }) {
+function PubQuizManager({
+  activeManager,
+  message,
+  onDeletePubQuiz,
+  onLoadPubQuizByCode,
+  onSavePubQuiz,
+  pubQuizzes,
+}) {
   const [draft, setDraft] = useState(() => createBlankPubQuizDraft());
   const [openRoundId, setOpenRoundId] = useState("round1");
   const [codeDraft, setCodeDraft] = useState("");
+  const [quizPendingDelete, setQuizPendingDelete] = useState(null);
   const isNarrow = useIsNarrowScreen();
+  const canDeletePubQuizzes = Boolean(activeManager?.headManager);
 
   function updateDraftField(field, value) {
     setDraft((currentDraft) => ({
@@ -8428,6 +9217,21 @@ function PubQuizManager({ message, onLoadPubQuizByCode, onSavePubQuiz, pubQuizze
         setOpenRoundId(loadedQuiz.rounds?.[0]?.id || "round1");
       }
     }
+  }
+
+  async function handleConfirmDelete() {
+    if (!quizPendingDelete?.id) return;
+
+    const deleted = await onDeletePubQuiz?.(quizPendingDelete.id);
+
+    if (!deleted) return;
+
+    if (draft.id === quizPendingDelete.id) {
+      setDraft(createBlankPubQuizDraft());
+      setOpenRoundId("round1");
+    }
+
+    setQuizPendingDelete(null);
   }
 
   return (
@@ -8528,12 +9332,8 @@ function PubQuizManager({ message, onLoadPubQuizByCode, onSavePubQuiz, pubQuizze
           ) : (
             <div style={{ display: "grid", gap: 10 }}>
               {pubQuizzes.map((pubQuiz) => (
-                <button
+                <article
                   key={pubQuiz.id}
-                  onClick={() => {
-                    setDraft(createPubQuizDraftFromData(pubQuiz));
-                    setOpenRoundId(pubQuiz.rounds?.[0]?.id || "round1");
-                  }}
                   style={{
                     padding: 12,
                     border: `1px solid ${
@@ -8541,24 +9341,56 @@ function PubQuizManager({ message, onLoadPubQuizByCode, onSavePubQuiz, pubQuizze
                     }`,
                     borderRadius: 10,
                     background: draft.id === pubQuiz.id ? "#082f49" : "#111827",
-                    color: "#e5e7eb",
-                    textAlign: "left",
-                    cursor: "pointer",
                   }}
                 >
-                  <strong>{pubQuiz.title || "Unbenanntes Pubquiz"}</strong>
-                  <span
+                  <button
+                    onClick={() => {
+                      setDraft(createPubQuizDraftFromData(pubQuiz));
+                      setOpenRoundId(pubQuiz.rounds?.[0]?.id || "round1");
+                    }}
                     style={{
-                      display: "block",
-                      marginTop: 4,
-                      color: "#94a3b8",
-                      fontSize: 13,
+                      width: "100%",
+                      border: "none",
+                      background: "transparent",
+                      color: "#e5e7eb",
+                      textAlign: "left",
+                      cursor: "pointer",
+                      padding: 0,
                     }}
                   >
-                    {pubQuiz.rounds?.length || 0} Runden
-                    {pubQuiz.quizCode ? ` - Code ${pubQuiz.quizCode}` : ""}
-                  </span>
-                </button>
+                    <strong>{pubQuiz.title || "Unbenanntes Pubquiz"}</strong>
+                    <span
+                      style={{
+                        display: "block",
+                        marginTop: 4,
+                        color: "#94a3b8",
+                        fontSize: 13,
+                      }}
+                    >
+                      {pubQuiz.rounds?.length || 0} Runden
+                      {pubQuiz.quizCode ? ` - Code ${pubQuiz.quizCode}` : ""}
+                    </span>
+                  </button>
+                  {canDeletePubQuizzes && (
+                    <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
+                      <button
+                        type="button"
+                        onClick={() => setQuizPendingDelete(pubQuiz)}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 9,
+                          border: "1px solid rgba(248, 113, 113, 0.45)",
+                          background: "rgba(127, 29, 29, 0.35)",
+                          color: "#fecaca",
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Loeschen
+                      </button>
+                    </div>
+                  )}
+                </article>
               ))}
             </div>
           )}
@@ -8922,6 +9754,78 @@ function PubQuizManager({ message, onLoadPubQuizByCode, onSavePubQuiz, pubQuizze
           </div>
         </section>
       </div>
+      {quizPendingDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Pubquiz ${quizPendingDelete.title || "Unbenanntes Pubquiz"} loeschen`}
+          onClick={() => setQuizPendingDelete(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 30,
+            display: "grid",
+            placeItems: "center",
+            padding: 24,
+            background: "rgba(2, 6, 23, 0.86)",
+          }}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              width: "min(420px, 100%)",
+              display: "grid",
+              gap: 14,
+              padding: 20,
+              border: "1px solid #334155",
+              borderRadius: 16,
+              background: "#0b1220",
+            }}
+          >
+            <h3 style={{ margin: 0 }}>Pubquiz wirklich loeschen?</h3>
+            <p style={{ margin: 0, color: "#cbd5e1" }}>
+              "{quizPendingDelete.title || "Unbenanntes Pubquiz"}"
+              {quizPendingDelete.quizCode ? ` mit Code ${quizPendingDelete.quizCode}` : ""} wird
+              dauerhaft entfernt.
+            </p>
+            <p style={{ margin: 0, color: "#fca5a5", fontSize: 14 }}>
+              Diese Aktion kann nicht rueckgaengig gemacht werden.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => setQuizPendingDelete(null)}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 10,
+                  border: "1px solid #334155",
+                  background: "#111827",
+                  color: "#e5e7eb",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                Abbrechen
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 10,
+                  border: "1px solid rgba(248, 113, 113, 0.5)",
+                  background: "#7f1d1d",
+                  color: "#fee2e2",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                Ja, loeschen
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -9111,15 +10015,30 @@ function QuizScreen({
   const remainingHints = Math.max(0, hintBudget - usedHints);
   const roundUnlocked = isRoundUnlocked(lobbyData, activeRound.id);
   const roundUnlockMs = getRoundUnlockMs(lobbyData, activeRound.id);
-  const roundStartMs = getEffectiveRoundStartMs(sessionData, lobbyData, activeRound.id, now);
+  const roundEligibilityMs = getRoundEligibilityMs(
+    sessionData,
+    lobbyData,
+    activeRound.id,
+    now,
+    quizRounds,
+  );
+  const roundStartMs = getEffectiveRoundStartMs(
+    sessionData,
+    lobbyData,
+    activeRound.id,
+    now,
+    quizRounds,
+  );
   const roundDurationMs = getRoundDurationMs(activeRound, lobbyData);
   const remainingRoundMs =
     roundStartMs === null ? null : roundStartMs + roundDurationMs - now;
   const roundHasStarted = roundStartMs !== null;
   const roundExpired = roundHasStarted && remainingRoundMs <= 0;
   const roundStartWindowExpired =
-    Boolean(roundUnlockMs) && !getManualRoundStartMs(sessionData, activeRound.id) && roundHasStarted;
-  const autoStartMs = roundUnlockMs ? roundUnlockMs + ROUND_START_WINDOW_MS : null;
+    Boolean(roundEligibilityMs) &&
+    !getManualRoundStartMs(sessionData, activeRound.id) &&
+    roundHasStarted;
+  const autoStartMs = roundEligibilityMs ? roundEligibilityMs + ROUND_START_WINDOW_MS : null;
   const roundExtraMinutes = getRoundExtraMinutes(lobbyData, activeRound.id);
   const roundExtraAnnouncement = lobbyData?.roundExtraAnnouncements?.[activeRound.id];
   const answersRevealed = isRoundAnswersRevealed(lobbyData, activeRound.id);
@@ -9419,7 +10338,7 @@ function QuizScreen({
                     hour: "2-digit",
                     minute: "2-digit",
                   })}.`
-                : "Wenn ihr nicht selbst startet, beginnt der Timer 10 Minuten nach Freischaltung automatisch."}
+                : "Wenn ihr nicht selbst startet, beginnt der Timer 10 Minuten nach eurem Einstieg oder nach dem Abschluss der vorherigen Runde automatisch."}
             </p>
             <button
               onClick={() => onStartTeamRound(activeRound.id)}
