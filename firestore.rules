@@ -193,6 +193,9 @@ service cloud.firestore {
           "status",
           "requestedAt",
           "redeemedAt",
+          "manualAssignment",
+          "createdByManagerKey",
+          "createdByManagerName",
           "createdAt",
           "updatedAt"
         ])
@@ -203,8 +206,11 @@ service cloud.firestore {
         && request.resource.data.rank is number
         && request.resource.data.title is string
         && request.resource.data.description is string
-        && request.resource.data.status is string;
-        allow delete: if false;
+        && request.resource.data.status is string
+        && (!("manualAssignment" in request.resource.data) || request.resource.data.manualAssignment is bool)
+        && (!("createdByManagerKey" in request.resource.data) || request.resource.data.createdByManagerKey is string)
+        && (!("createdByManagerName" in request.resource.data) || request.resource.data.createdByManagerName is string);
+        allow delete: if true;
       }
 
       match /teammates/{teammateId} {
@@ -251,7 +257,7 @@ service cloud.firestore {
       && request.resource.data.tiebreakerQuestion is string
       && (!("tiebreakerAnswer" in request.resource.data) || request.resource.data.tiebreakerAnswer is number || request.resource.data.tiebreakerAnswer == null)
       && request.resource.data.rounds is list;
-      allow delete: if false;
+      allow delete: if true;
     }
 
     match /managers/{managerId} {
@@ -261,6 +267,7 @@ service cloud.firestore {
         "name",
         "password",
         "active",
+        "canEditScores",
         "headManager",
         "createdAt",
         "updatedAt",
@@ -271,6 +278,7 @@ service cloud.firestore {
       && request.resource.data.name is string
       && request.resource.data.password is string
       && request.resource.data.active is bool
+      && (!("canEditScores" in request.resource.data) || request.resource.data.canEditScores is bool)
       && (!("headManager" in request.resource.data) || request.resource.data.headManager is bool);
       allow delete: if false;
     }
