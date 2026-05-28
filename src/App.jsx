@@ -6787,6 +6787,7 @@ function VoucherDirectory({
   const [voucherMessage, setVoucherMessage] = useState("");
   const isNarrow = useIsNarrowScreen();
   const canEditVouchers = Boolean(activeManager?.headManager);
+  const canRedeemVouchers = Boolean(activeManager && onUpdateVoucherStatus);
   const allEffectiveVouchers = buildAllVoucherEntries(
     allTeamSessions,
     allVoucherDocs,
@@ -6848,12 +6849,23 @@ function VoucherDirectory({
       return map;
     }, new Map()).values(),
   ).sort((a, b) => getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt));
+  const sessionCountByEvent = new Map();
+
+  allTeamSessions.forEach((session) => {
+    if (!session.eventId) return;
+
+    sessionCountByEvent.set(
+      session.eventId,
+      (sessionCountByEvent.get(session.eventId) || 0) + 1,
+    );
+  });
   const visibleEventSummaries = eventSummaries.filter((event) => {
     const voucherCount = allEffectiveVouchers.filter(
       (voucher) => voucher.eventId === event.eventId,
     ).length;
+    const sessionCount = sessionCountByEvent.get(event.eventId) || 0;
 
-    if (voucherCount === 0) return false;
+    if (voucherCount === 0 && sessionCount === 0) return false;
     if (!normalizedSearchTerm) return true;
 
     return normalizeTeamName(
@@ -6959,11 +6971,11 @@ function VoucherDirectory({
   }
 
   function renderVoucherActions(voucher, sourceSession) {
-    if (!canEditVouchers) return null;
+    if (!canRedeemVouchers && !canEditVouchers) return null;
 
     return (
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
-        {voucher.status !== "redeemed" && onUpdateVoucherStatus && (
+        {voucher.status !== "redeemed" && canRedeemVouchers && (
           <button
             type="button"
             onClick={async () => {
@@ -6980,7 +6992,7 @@ function VoucherDirectory({
             Als eingeloest markieren
           </button>
         )}
-        {voucher.status === "redeemed" && onUpdateVoucherStatus && (
+        {voucher.status === "redeemed" && canRedeemVouchers && (
           <button
             type="button"
             onClick={async () => {
@@ -7114,7 +7126,7 @@ function VoucherDirectory({
                       Gespielt am {formatCompletionDate(event.awardedAt)}
                     </span>
                     <span style={{ display: "block", marginTop: 4, color: "#94a3b8" }}>
-                      {voucherCount}/3 Gutscheine
+                      {voucherCount}/3 Gutscheine - {sessionCountByEvent.get(event.eventId) || 0} Teams
                     </span>
                   </button>
                 );
