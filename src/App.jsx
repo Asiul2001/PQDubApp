@@ -1421,19 +1421,29 @@ function buildImageLayouts(images, imageSizes, imageMax, contentWidth, gap) {
 }
 
 function measurePrintableCopy(doc, round, imageSizes, scale, contentWidth) {
-  const gap = 1.2 * scale;
-  const titleSize = 6.8 * scale;
-  const categorySize = 9 * scale;
-  const questionSize = 8.2 * scale;
-  const promptSize = 8.7 * scale;
-  const noteSize = 7.2 * scale;
-  const imageMax = 50 * scale;
-  let height = titleSize * 0.42 + 1.1 * scale + categorySize * 0.42 + 2 * scale;
+  const gap = 1 * scale;
+  const titleSize = 6.4 * scale;
+  const metaSize = 7.2 * scale;
+  const categorySize = 9.4 * scale;
+  const questionSize = 8.4 * scale;
+  const promptSize = 8.8 * scale;
+  const noteSize = 7 * scale;
+  const imageMax = 56 * scale;
+  const questionBlockPadding = 1.4 * scale;
+  let height =
+    titleSize * 0.42 +
+    0.9 * scale +
+    metaSize * 0.36 +
+    1.3 * scale +
+    categorySize * 0.42 +
+    2 * scale;
 
   (round.questions || []).forEach((question, index) => {
     const questionTitle = `Frage ${index + 1}${
       Number(question.points) > 1 ? ` (${question.points} Punkte)` : ""
     }:`;
+
+    height += questionBlockPadding;
 
     doc.setFontSize(questionSize);
     const titleLines = doc.splitTextToSize(questionTitle, contentWidth);
@@ -1464,14 +1474,14 @@ function measurePrintableCopy(doc, round, imageSizes, scale, contentWidth) {
       height += imageLayout.height + 1.5 * scale;
     }
 
-    height += gap;
+    height += questionBlockPadding + gap;
   });
 
   return height;
 }
 
 function findPrintableScale(doc, round, imageSizes, contentWidth, maxHeight) {
-  const scales = [1, 0.96, 0.92, 0.88, 0.84, 0.8, 0.76, 0.72, 0.68];
+  const scales = [1.14, 1.1, 1.06, 1.02, 0.98, 0.94, 0.9, 0.86, 0.82, 0.78, 0.74];
 
   return (
     scales.find(
@@ -1482,28 +1492,48 @@ function findPrintableScale(doc, round, imageSizes, contentWidth, maxHeight) {
 }
 
 function drawPrintableCopy(doc, round, quizTitle, copyLabel, x, y, width, height, imageSizes) {
-  const scale = findPrintableScale(doc, round, imageSizes, width, height);
-  const gap = 1.2 * scale;
-  const titleSize = 6.8 * scale;
-  const categorySize = 9 * scale;
-  const questionSize = 8.2 * scale;
-  const promptSize = 8.7 * scale;
-  const noteSize = 7.2 * scale;
-  const imageMax = 50 * scale;
+  const outerPadding = 4.2;
+  const contentWidth = width - outerPadding * 2;
+  const contentHeight = height - outerPadding * 2;
+  const scale = findPrintableScale(doc, round, imageSizes, contentWidth, contentHeight);
+  const gap = 1 * scale;
+  const titleSize = 6.4 * scale;
+  const metaSize = 7.2 * scale;
+  const categorySize = 9.4 * scale;
+  const questionSize = 8.4 * scale;
+  const promptSize = 8.8 * scale;
+  const noteSize = 7 * scale;
+  const imageMax = 56 * scale;
+  const questionBlockPadding = 1.4 * scale;
   const category = round.category || round.title;
   const roundNumber = round.id?.match(/\d+/)?.[0] || round.title.match(/\d+/)?.[0] || "";
-  let cursorY = y;
+  const innerX = x + outerPadding;
+  let cursorY = y + outerPadding;
+
+  doc.setDrawColor(148, 163, 184);
+  doc.setFillColor(255, 255, 255);
+  doc.roundedRect(x, y, width, height, 3.5, 3.5, "FD");
+
+  doc.setDrawColor(203, 213, 225);
+  doc.setFillColor(241, 245, 249);
+  doc.roundedRect(x + 1.5, y + 1.5, width - 3, 17, 2.8, 2.8, "FD");
 
   doc.setTextColor(107, 114, 128);
-  doc.setFont("helvetica", "normal");
+  doc.setFont("helvetica", "bold");
   doc.setFontSize(titleSize);
-  doc.text(`${quizTitle} - ${copyLabel}`, x, cursorY);
-  cursorY += titleSize * 0.42 + 1.1 * scale;
+  doc.text(quizTitle || "Pubquiz", innerX, cursorY);
+  cursorY += titleSize * 0.42 + 1 * scale;
+
+  doc.setTextColor(71, 85, 105);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(metaSize);
+  doc.text(`${copyLabel}  |  Zum Mitspielen und Abgeben`, innerX, cursorY);
+  cursorY += metaSize * 0.36 + 1.6 * scale;
 
   doc.setTextColor(17, 24, 39);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(categorySize);
-  doc.text(`Kategorie ${roundNumber} "${category}":`, x, cursorY);
+  doc.text(`Runde ${roundNumber}: ${category}`, innerX, cursorY);
   cursorY += categorySize * 0.42 + 2 * scale;
 
   (round.questions || []).forEach((question, index) => {
@@ -1511,45 +1541,63 @@ function drawPrintableCopy(doc, round, quizTitle, copyLabel, x, y, width, height
       Number(question.points) > 1 ? ` (${question.points} Punkte)` : ""
     }:`;
 
-    doc.setTextColor(17, 24, 39);
+    const titleLines = doc.splitTextToSize(questionTitle, contentWidth);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(questionSize);
-    const titleLines = doc.splitTextToSize(questionTitle, width);
-    doc.text(titleLines, x, cursorY);
+    const promptLines = doc.splitTextToSize(
+      question.prompt || "Noch keine Frage eingetragen.",
+      contentWidth,
+    );
+    const noteLines = question.mediaNote
+      ? doc.splitTextToSize(`Bildnotiz: ${question.mediaNote}`, contentWidth)
+      : [];
+    const imageLayout = question.images?.length
+      ? buildImageLayouts(question.images, imageSizes, imageMax, contentWidth, gap)
+      : { height: 0, layouts: [] };
+    const questionHeight =
+      questionBlockPadding * 2 +
+      titleLines.length * questionSize * 0.38 +
+      promptLines.length * promptSize * 0.42 +
+      noteLines.length * noteSize * 0.4 +
+      (imageLayout.height ? imageLayout.height + 1.5 * scale : 0);
+
+    doc.setDrawColor(226, 232, 240);
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(
+      innerX - 1.5,
+      cursorY - 2,
+      contentWidth + 3,
+      questionHeight + 2.2,
+      2.2,
+      2.2,
+      "FD",
+    );
+
+    cursorY += questionBlockPadding;
+
+    doc.setTextColor(15, 23, 42);
+    doc.text(titleLines, innerX, cursorY);
     cursorY += titleLines.length * questionSize * 0.38;
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(promptSize);
-    const promptLines = doc.splitTextToSize(
-      question.prompt || "Noch keine Frage eingetragen.",
-      width,
-    );
-    doc.text(promptLines, x, cursorY);
+    doc.text(promptLines, innerX, cursorY);
     cursorY += promptLines.length * promptSize * 0.42;
 
     if (question.mediaNote) {
       doc.setTextColor(55, 65, 81);
       doc.setFontSize(noteSize);
-      const noteLines = doc.splitTextToSize(`Bildnotiz: ${question.mediaNote}`, width);
-      doc.text(noteLines, x, cursorY);
+      doc.text(noteLines, innerX, cursorY);
       cursorY += noteLines.length * noteSize * 0.4;
     }
 
     if (question.images?.length) {
-      const imageLayout = buildImageLayouts(
-        question.images,
-        imageSizes,
-        imageMax,
-        width,
-        gap,
-      );
-
       imageLayout.layouts.forEach((layout) => {
         try {
           doc.addImage(
             layout.image.src,
             getImageFormat(layout.image.src),
-            x + layout.x,
+            innerX + layout.x,
             cursorY + 1.2 * scale + layout.y,
             layout.width,
             layout.height,
@@ -1562,7 +1610,7 @@ function drawPrintableCopy(doc, round, quizTitle, copyLabel, x, y, width, height
       cursorY += imageLayout.height + 1.5 * scale;
     }
 
-    cursorY += gap;
+    cursorY += questionBlockPadding + gap;
   });
 }
 
@@ -1596,9 +1644,9 @@ async function createPrintableTeamQuizPdf(draft) {
   const imageSizes = new Map(imageSizeEntries);
   const pageWidth = 210;
   const pageHeight = 297;
-  const marginX = 18;
-  const marginY = 14;
-  const gap = 8;
+  const marginX = 10;
+  const marginY = 9;
+  const gap = 4;
   const copyWidth = pageWidth - marginX * 2;
   const copyHeight = (pageHeight - marginY * 2 - gap) / 2;
 
