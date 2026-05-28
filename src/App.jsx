@@ -454,8 +454,12 @@ function getParticipationKey(session) {
     session?.teamId ||
     session?.id ||
     normalizeTeamName(session?.teamName || "");
+  const eventKey =
+    session?.eventId ||
+    getEventId(session?.lobbyCode || session?.quizCode || "") ||
+    getSessionDateKey(session);
 
-  return `${teamKey}__${getSessionDateKey(session)}`;
+  return `${teamKey}__${eventKey}`;
 }
 
 function mergeSessionParticipation(sessions = []) {
