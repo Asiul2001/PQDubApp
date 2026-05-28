@@ -7047,7 +7047,7 @@ function VoucherDirectory({
             Einloesung zuruecknehmen
           </button>
         )}
-        {onDeleteVoucherAssignment && (
+        {canEditVouchers && onDeleteVoucherAssignment && (
           <button
             type="button"
             onClick={async () => {
