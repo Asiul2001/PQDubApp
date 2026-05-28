@@ -3898,48 +3898,70 @@ function App() {
     }
 
     const voucherRef = doc(db, "teams", targetTeamId, "vouchers", voucher.id);
+    const nextVoucherData = {
+      id: voucher.id,
+      eventId:
+        voucher.eventId ||
+        sourceSession?.eventId ||
+        getEventId(voucher.quizCode || sourceSession?.lobbyCode || ""),
+      quizCode:
+        voucher.quizCode || sourceSession?.quizCode || sourceSession?.lobbyCode || "",
+      quizLabel:
+        voucher.quizLabel || getQuizLabelForSession(sourceSession || voucher, pubQuizzes),
+      teamId: targetTeamId,
+      teamName:
+        teamName ||
+        voucher.teamName ||
+        sessionData?.teamName ||
+        sourceSession?.teamName ||
+        "",
+      rank: Number(voucher.rank) || Number(sourceSession?.rankDaily) || 0,
+      title:
+        voucher.title ||
+        getVoucherReward(Number(voucher.rank))?.title ||
+        "Gutschein",
+      description:
+        voucher.description ||
+        getVoucherReward(Number(voucher.rank))?.description ||
+        "Gewinn aus dem Pubquiz",
+      totalPoints: Number(voucher.totalPoints) || Number(sourceSession?.totalPoints) || 0,
+      sourceSessionId: voucher.sourceSessionId || sourceSession?.id || "",
+      awardedAt:
+        voucher.awardedAt ||
+        getCompletionValue(sourceSession) ||
+        sourceSession?.createdAt ||
+        new Date(),
+      status: nextStatus,
+      updatedAt: new Date(),
+      ...(nextStatus === "requested"
+        ? {
+            requestedAt: voucher.requestedAt || new Date(),
+            redeemedAt: null,
+          }
+        : {}),
+      ...(nextStatus === "redeemed"
+        ? {
+            requestedAt: voucher.requestedAt || new Date(),
+            redeemedAt: new Date(),
+          }
+        : {}),
+      ...(nextStatus === "earned"
+        ? {
+            requestedAt: null,
+            redeemedAt: null,
+          }
+        : {}),
+    };
 
     try {
       await setDoc(
         voucherRef,
         {
-          id: voucher.id,
-          eventId:
-            voucher.eventId ||
-            sourceSession?.eventId ||
-            getEventId(voucher.quizCode || sourceSession?.lobbyCode || ""),
-          quizCode:
-            voucher.quizCode || sourceSession?.quizCode || sourceSession?.lobbyCode || "",
-          quizLabel:
-            voucher.quizLabel || getQuizLabelForSession(sourceSession || voucher, pubQuizzes),
-          teamId: targetTeamId,
-          teamName:
-            teamName ||
-            voucher.teamName ||
-            sessionData?.teamName ||
-            sourceSession?.teamName ||
-            "",
-          rank: Number(voucher.rank) || Number(sourceSession?.rankDaily) || 0,
-          title:
-            voucher.title ||
-            getVoucherReward(Number(voucher.rank))?.title ||
-            "Gutschein",
-          description:
-            voucher.description ||
-            getVoucherReward(Number(voucher.rank))?.description ||
-            "Gewinn aus dem Pubquiz",
-          totalPoints: Number(voucher.totalPoints) || Number(sourceSession?.totalPoints) || 0,
-          sourceSessionId: voucher.sourceSessionId || sourceSession?.id || "",
-          awardedAt:
-            voucher.awardedAt ||
-            getCompletionValue(sourceSession) ||
-            sourceSession?.createdAt ||
-            serverTimestamp(),
-          status: nextStatus,
+          ...nextVoucherData,
           updatedAt: serverTimestamp(),
           ...(nextStatus === "requested"
             ? {
-                requestedAt: voucher.requestedAt || serverTimestamp(),
+              requestedAt: voucher.requestedAt || serverTimestamp(),
                 redeemedAt: deleteField(),
               }
             : {}),
@@ -3958,6 +3980,10 @@ function App() {
         },
         { merge: true },
       );
+      setAllVoucherDocs((currentDocs) => {
+        const remainingDocs = currentDocs.filter((currentDoc) => currentDoc.id !== voucher.id);
+        return [...remainingDocs, nextVoucherData];
+      });
 
       return {
         ok: true,
@@ -4033,32 +4059,42 @@ function App() {
 
     const reward = getVoucherReward(normalizedRank);
     const voucherId = `${eventId}__${teamId}__manual_rank${normalizedRank}`;
+    const nextVoucherData = {
+      id: voucherId,
+      eventId,
+      quizCode: quizCode || "",
+      quizLabel: quizLabel || quizCode || "Pubquiz",
+      teamId,
+      teamName,
+      rank: normalizedRank,
+      title: reward?.title || `Platz ${normalizedRank} Gutschein`,
+      description: reward?.description || "Manuell vergebener Gutschein",
+      totalPoints: Number(totalPoints) || 0,
+      sourceSessionId: sourceSessionId || "",
+      awardedAt: awardedAt || new Date(),
+      status: "earned",
+      manualAssignment: true,
+      createdAt: new Date(),
+      createdByManagerKey: activeManager.key || "",
+      createdByManagerName: activeManager.name || activeManager.key || "Head Manager",
+      updatedAt: new Date(),
+    };
 
     try {
       await setDoc(
         doc(db, "teams", teamId, "vouchers", voucherId),
         {
-          id: voucherId,
-          eventId,
-          quizCode: quizCode || "",
-          quizLabel: quizLabel || quizCode || "Pubquiz",
-          teamId,
-          teamName,
-          rank: normalizedRank,
-          title: reward?.title || `Platz ${normalizedRank} Gutschein`,
-          description: reward?.description || "Manuell vergebener Gutschein",
-          totalPoints: Number(totalPoints) || 0,
-          sourceSessionId: sourceSessionId || "",
+          ...nextVoucherData,
           awardedAt: awardedAt || serverTimestamp(),
-          status: "earned",
-          manualAssignment: true,
           createdAt: serverTimestamp(),
-          createdByManagerKey: activeManager.key || "",
-          createdByManagerName: activeManager.name || activeManager.key || "Head Manager",
           updatedAt: serverTimestamp(),
         },
         { merge: true },
       );
+      setAllVoucherDocs((currentDocs) => {
+        const remainingDocs = currentDocs.filter((currentDoc) => currentDoc.id !== voucherId);
+        return [...remainingDocs, nextVoucherData];
+      });
 
       return {
         ok: true,
@@ -4087,30 +4123,40 @@ function App() {
     }
 
     try {
+      const deletedVoucherData = {
+        id: voucher.id,
+        eventId: voucher.eventId || getEventId(voucher.quizCode || ""),
+        quizCode: voucher.quizCode || "",
+        quizLabel: voucher.quizLabel || voucher.quizCode || "Pubquiz",
+        teamId: voucher.teamId,
+        teamName: voucher.teamName || "",
+        rank: Number(voucher.rank) || 0,
+        title: voucher.title || "Gutschein",
+        description: voucher.description || "",
+        totalPoints: Number(voucher.totalPoints) || 0,
+        sourceSessionId: voucher.sourceSessionId || "",
+        awardedAt: voucher.awardedAt || new Date(),
+        status: "deleted",
+        deleted: true,
+        deletedAt: new Date(),
+        deletedByManagerKey: activeManager.key || "",
+        deletedByManagerName: activeManager.name || activeManager.key || "Head Manager",
+        updatedAt: new Date(),
+      };
       await setDoc(
         doc(db, "teams", voucher.teamId, "vouchers", voucher.id),
         {
-          id: voucher.id,
-          eventId: voucher.eventId || getEventId(voucher.quizCode || ""),
-          quizCode: voucher.quizCode || "",
-          quizLabel: voucher.quizLabel || voucher.quizCode || "Pubquiz",
-          teamId: voucher.teamId,
-          teamName: voucher.teamName || "",
-          rank: Number(voucher.rank) || 0,
-          title: voucher.title || "Gutschein",
-          description: voucher.description || "",
-          totalPoints: Number(voucher.totalPoints) || 0,
-          sourceSessionId: voucher.sourceSessionId || "",
+          ...deletedVoucherData,
           awardedAt: voucher.awardedAt || serverTimestamp(),
-          status: "deleted",
-          deleted: true,
           deletedAt: serverTimestamp(),
-          deletedByManagerKey: activeManager.key || "",
-          deletedByManagerName: activeManager.name || activeManager.key || "Head Manager",
           updatedAt: serverTimestamp(),
         },
         { merge: true },
       );
+      setAllVoucherDocs((currentDocs) => {
+        const remainingDocs = currentDocs.filter((currentDoc) => currentDoc.id !== voucher.id);
+        return [...remainingDocs, deletedVoucherData];
+      });
       return {
         ok: true,
         message: `${voucher.title || "Gutschein"} wurde geloescht.`,
