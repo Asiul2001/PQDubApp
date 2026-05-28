@@ -782,14 +782,24 @@ function getVoucherIdentityKey(entry) {
 
 function buildVoucherEntries(sessions = [], voucherDocs = [], pubQuizzes = [], options = {}) {
   const { visibleTeamId = null } = options;
-  const voucherDocMap = new Map(voucherDocs.map((voucher) => [voucher.id, voucher]));
-  const voucherIdentityMap = new Map(
+  const activeVoucherDocs = voucherDocs.filter((voucher) => !voucher.deleted);
+  const deletedVoucherIds = new Set(
+    voucherDocs.filter((voucher) => voucher.deleted).map((voucher) => voucher.id),
+  );
+  const deletedVoucherIdentityKeys = new Set(
     voucherDocs
+      .filter((voucher) => voucher.deleted)
+      .map((voucher) => getVoucherIdentityKey(voucher))
+      .filter(Boolean),
+  );
+  const voucherDocMap = new Map(activeVoucherDocs.map((voucher) => [voucher.id, voucher]));
+  const voucherIdentityMap = new Map(
+    activeVoucherDocs
       .map((voucher) => [getVoucherIdentityKey(voucher), voucher])
       .filter(([key]) => Boolean(key)),
   );
   const voucherEventRankMap = new Map(
-    voucherDocs
+    activeVoucherDocs
       .map((voucher) => [getVoucherEventRankKey(voucher), voucher])
       .filter(([key]) => Boolean(key)),
   );
@@ -816,6 +826,9 @@ function buildVoucherEntries(sessions = [], voucherDocs = [], pubQuizzes = [], o
         ...session,
         sourceSessionId: session.id,
       });
+      if (deletedVoucherIds.has(id) || (identityKey && deletedVoucherIdentityKeys.has(identityKey))) {
+        return null;
+      }
       const storedVoucher =
         voucherDocMap.get(id) || (identityKey ? voucherIdentityMap.get(identityKey) : null);
 
@@ -851,7 +864,7 @@ function buildVoucherEntries(sessions = [], voucherDocs = [], pubQuizzes = [], o
   const existingIdentityKeys = new Set(
     derivedEntries.map((entry) => getVoucherIdentityKey(entry)).filter(Boolean),
   );
-  const docOnlyEntries = voucherDocs
+  const docOnlyEntries = activeVoucherDocs
     .filter(
       (voucher) =>
         (!visibleTeamId || voucher.teamId === visibleTeamId) &&
@@ -3990,6 +4003,7 @@ function App() {
     const normalizedRank = Number(rank);
     const vouchersForEvent = allVoucherDocs.filter(
       (voucher) =>
+        !voucher.deleted &&
         (voucher.eventId || getEventId(voucher.quizCode || "")) === eventId &&
         [1, 2, 3].includes(Number(voucher.rank)),
     );
@@ -4073,7 +4087,30 @@ function App() {
     }
 
     try {
-      await deleteDoc(doc(db, "teams", voucher.teamId, "vouchers", voucher.id));
+      await setDoc(
+        doc(db, "teams", voucher.teamId, "vouchers", voucher.id),
+        {
+          id: voucher.id,
+          eventId: voucher.eventId || getEventId(voucher.quizCode || ""),
+          quizCode: voucher.quizCode || "",
+          quizLabel: voucher.quizLabel || voucher.quizCode || "Pubquiz",
+          teamId: voucher.teamId,
+          teamName: voucher.teamName || "",
+          rank: Number(voucher.rank) || 0,
+          title: voucher.title || "Gutschein",
+          description: voucher.description || "",
+          totalPoints: Number(voucher.totalPoints) || 0,
+          sourceSessionId: voucher.sourceSessionId || "",
+          awardedAt: voucher.awardedAt || serverTimestamp(),
+          status: "deleted",
+          deleted: true,
+          deletedAt: serverTimestamp(),
+          deletedByManagerKey: activeManager.key || "",
+          deletedByManagerName: activeManager.name || activeManager.key || "Head Manager",
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
       return {
         ok: true,
         message: `${voucher.title || "Gutschein"} wurde geloescht.`,
@@ -7010,7 +7047,7 @@ function VoucherDirectory({
             Einloesung zuruecknehmen
           </button>
         )}
-        {voucher.isStored && onDeleteVoucherAssignment && (
+        {onDeleteVoucherAssignment && (
           <button
             type="button"
             onClick={async () => {

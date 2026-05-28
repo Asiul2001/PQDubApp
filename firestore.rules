@@ -196,6 +196,10 @@ service cloud.firestore {
           "manualAssignment",
           "createdByManagerKey",
           "createdByManagerName",
+          "deleted",
+          "deletedAt",
+          "deletedByManagerKey",
+          "deletedByManagerName",
           "createdAt",
           "updatedAt"
         ])
@@ -209,7 +213,10 @@ service cloud.firestore {
         && request.resource.data.status is string
         && (!("manualAssignment" in request.resource.data) || request.resource.data.manualAssignment is bool)
         && (!("createdByManagerKey" in request.resource.data) || request.resource.data.createdByManagerKey is string)
-        && (!("createdByManagerName" in request.resource.data) || request.resource.data.createdByManagerName is string);
+        && (!("createdByManagerName" in request.resource.data) || request.resource.data.createdByManagerName is string)
+        && (!("deleted" in request.resource.data) || request.resource.data.deleted is bool)
+        && (!("deletedByManagerKey" in request.resource.data) || request.resource.data.deletedByManagerKey is string)
+        && (!("deletedByManagerName" in request.resource.data) || request.resource.data.deletedByManagerName is string);
         allow delete: if true;
       }
 
