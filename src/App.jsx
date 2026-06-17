@@ -2091,48 +2091,31 @@ function App() {
 
   useEffect(() => {
     if (activeManager) {
-      let cancelled = false;
-      const quizEventsRef = collection(db, "quizEvents");
-      const legacyVouchersRef = collectionGroup(db, "vouchers");
+      const allVouchersRef = collectionGroup(db, "vouchers");
 
-      async function loadAllEventVouchers() {
-        try {
-          const eventsSnapshot = await getDocs(quizEventsRef);
-          const [voucherSnapshots, legacySnapshot] = await Promise.all([
-            Promise.all(
-              eventsSnapshot.docs.map((eventDoc) =>
-                getDocs(collection(db, "quizEvents", eventDoc.id, "vouchers")),
-              ),
-            ),
-            getDocs(legacyVouchersRef),
-          ]);
+      return onSnapshot(allVouchersRef, (snapshot) => {
+        const primaryDocs = [];
+        const fallbackDocs = [];
 
-          const primaryDocs = voucherSnapshots.flatMap((snapshot) =>
-            snapshot.docs.map((voucherDoc) => ({ id: voucherDoc.id, ...voucherDoc.data() })),
-          );
-          const fallbackDocs = legacySnapshot.docs.map((voucherDoc) => ({
+        snapshot.docs.forEach((voucherDoc) => {
+          const rootCollectionId = voucherDoc.ref.parent.parent?.parent?.id;
+          const normalizedVoucher = {
             id: voucherDoc.id,
             ...voucherDoc.data(),
-          }));
+          };
 
-          if (cancelled) return;
+          if (rootCollectionId === "quizEvents") {
+            primaryDocs.push(normalizedVoucher);
+            return;
+          }
 
-          setAllVoucherDocs(mergeVoucherDocs(primaryDocs, fallbackDocs));
-        } catch (error) {
-          console.error("EVENT VOUCHERS LOAD ERROR:", error);
-        }
-      }
+          if (rootCollectionId === "teams") {
+            fallbackDocs.push(normalizedVoucher);
+          }
+        });
 
-      loadAllEventVouchers();
-
-      const unsubscribe = onSnapshot(quizEventsRef, () => {
-        loadAllEventVouchers();
+        setAllVoucherDocs(mergeVoucherDocs(primaryDocs, fallbackDocs));
       });
-
-      return () => {
-        cancelled = true;
-        unsubscribe();
-      };
     }
 
     if (!sessionData?.lobbyCode) return undefined;
@@ -4748,6 +4731,7 @@ function App() {
 
     const voucherBatch = writeBatch(db);
     let createdCount = 0;
+    const createdVoucherDocs = [];
     const quizLabel = getQuizLabelForSession(
       {
         eventId,
@@ -4764,55 +4748,48 @@ function App() {
       const reward = getVoucherReward(Number(row.rank));
       const voucherId = `${eventId}__${row.teamId}__rank${row.rank}`;
       const matchingSession = registeredTeams.find((team) => team.id === row.teamId);
+      const nextVoucherData = {
+        id: voucherId,
+        eventId,
+        quizCode: sessionData?.lobbyCode || "",
+        quizLabel: quizLabel || sessionData?.lobbyCode || "Pubquiz",
+        teamId: row.teamId,
+        teamName: row.teamName || "",
+        rank: Number(row.rank),
+        title: reward?.title || `Platz ${row.rank} Gutschein`,
+        description: reward?.description || "Gewinn aus dem Pubquiz",
+        totalPoints: Number(row.totalPoints) || 0,
+        sourceSessionId: matchingSession?.id || row.teamId,
+        awardedAt: getCompletionValue(matchingSession) || new Date(),
+        status: "earned",
+        autoCreatedFromRanking: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        createdByManagerKey: activeManager.key || "",
+        createdByManagerName: activeManager.name || activeManager.key || "Manager",
+      };
 
       voucherBatch.set(
         getEventVoucherRef(eventId, voucherId),
         {
-          id: voucherId,
-          eventId,
-          quizCode: sessionData?.lobbyCode || "",
-          quizLabel: quizLabel || sessionData?.lobbyCode || "Pubquiz",
-          teamId: row.teamId,
-          teamName: row.teamName || "",
-          rank: Number(row.rank),
-          title: reward?.title || `Platz ${row.rank} Gutschein`,
-          description: reward?.description || "Gewinn aus dem Pubquiz",
-          totalPoints: Number(row.totalPoints) || 0,
-          sourceSessionId: matchingSession?.id || row.teamId,
+          ...nextVoucherData,
           awardedAt: getCompletionValue(matchingSession) || serverTimestamp(),
-          status: "earned",
-          autoCreatedFromRanking: true,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-          createdByManagerKey: activeManager.key || "",
-          createdByManagerName: activeManager.name || activeManager.key || "Manager",
         },
         { merge: true },
       );
       voucherBatch.set(
         doc(db, "teams", row.teamId, "vouchers", voucherId),
         {
-          id: voucherId,
-          eventId,
-          quizCode: sessionData?.lobbyCode || "",
-          quizLabel: quizLabel || sessionData?.lobbyCode || "Pubquiz",
-          teamId: row.teamId,
-          teamName: row.teamName || "",
-          rank: Number(row.rank),
-          title: reward?.title || `Platz ${row.rank} Gutschein`,
-          description: reward?.description || "Gewinn aus dem Pubquiz",
-          totalPoints: Number(row.totalPoints) || 0,
-          sourceSessionId: matchingSession?.id || row.teamId,
+          ...nextVoucherData,
           awardedAt: getCompletionValue(matchingSession) || serverTimestamp(),
-          status: "earned",
-          autoCreatedFromRanking: true,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-          createdByManagerKey: activeManager.key || "",
-          createdByManagerName: activeManager.name || activeManager.key || "Manager",
         },
         { merge: true },
       );
+      createdVoucherDocs.push(nextVoucherData);
       createdCount += 1;
     });
 
@@ -4836,6 +4813,21 @@ function App() {
 
     try {
       await voucherBatch.commit();
+      setAllVoucherDocs((currentDocs) => {
+        const mergedDocs = [...currentDocs];
+
+        createdVoucherDocs.forEach((voucherDoc) => {
+          const existingIndex = mergedDocs.findIndex((currentDoc) => currentDoc.id === voucherDoc.id);
+
+          if (existingIndex >= 0) {
+            mergedDocs[existingIndex] = voucherDoc;
+          } else {
+            mergedDocs.push(voucherDoc);
+          }
+        });
+
+        return mergedDocs;
+      });
       return {
         ok: true,
         message: `${createdCount} Gutschein${createdCount === 1 ? "" : "e"} aus dem gespeicherten Ranking erstellt.`,
