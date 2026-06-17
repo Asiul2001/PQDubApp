@@ -133,6 +133,51 @@ service cloud.firestore {
       && (!("rankingPassword" in request.resource.data) || request.resource.data.rankingPassword is string);
     }
 
+    function hasValidVoucherShape(voucherId, teamId) {
+      return request.resource.data.keys().hasOnly([
+        "id",
+        "eventId",
+        "quizCode",
+        "quizLabel",
+        "teamId",
+        "teamName",
+        "rank",
+        "title",
+        "description",
+        "totalPoints",
+        "sourceSessionId",
+        "awardedAt",
+        "status",
+        "requestedAt",
+        "redeemedAt",
+        "manualAssignment",
+        "autoCreatedFromRanking",
+        "createdByManagerKey",
+        "createdByManagerName",
+        "deleted",
+        "deletedAt",
+        "deletedByManagerKey",
+        "deletedByManagerName",
+        "createdAt",
+        "updatedAt"
+      ])
+      && request.resource.data.id == voucherId
+      && (teamId == null || request.resource.data.teamId == teamId)
+      && request.resource.data.quizCode is string
+      && request.resource.data.teamName is string
+      && request.resource.data.rank is number
+      && request.resource.data.title is string
+      && request.resource.data.description is string
+      && request.resource.data.status is string
+      && (!("manualAssignment" in request.resource.data) || request.resource.data.manualAssignment is bool)
+      && (!("autoCreatedFromRanking" in request.resource.data) || request.resource.data.autoCreatedFromRanking is bool)
+      && (!("createdByManagerKey" in request.resource.data) || request.resource.data.createdByManagerKey is string)
+      && (!("createdByManagerName" in request.resource.data) || request.resource.data.createdByManagerName is string)
+      && (!("deleted" in request.resource.data) || request.resource.data.deleted is bool)
+      && (!("deletedByManagerKey" in request.resource.data) || request.resource.data.deletedByManagerKey is string)
+      && (!("deletedByManagerName" in request.resource.data) || request.resource.data.deletedByManagerName is string);
+    }
+
     match /settings/{settingId} {
       allow read: if true;
       allow create, update: if request.resource.data.keys().hasOnly([
@@ -168,6 +213,12 @@ service cloud.firestore {
         allow create, update: if true;
         allow delete: if false;
       }
+
+      match /vouchers/{voucherId} {
+        allow read: if true;
+        allow create, update: if hasValidVoucherShape(voucherId, null);
+        allow delete: if true;
+      }
     }
 
     match /teams/{teamId} {
@@ -177,46 +228,7 @@ service cloud.firestore {
 
       match /vouchers/{voucherId} {
         allow read: if true;
-        allow create, update: if request.resource.data.keys().hasOnly([
-          "id",
-          "eventId",
-          "quizCode",
-          "quizLabel",
-          "teamId",
-          "teamName",
-          "rank",
-          "title",
-          "description",
-          "totalPoints",
-          "sourceSessionId",
-          "awardedAt",
-          "status",
-          "requestedAt",
-          "redeemedAt",
-          "manualAssignment",
-          "createdByManagerKey",
-          "createdByManagerName",
-          "deleted",
-          "deletedAt",
-          "deletedByManagerKey",
-          "deletedByManagerName",
-          "createdAt",
-          "updatedAt"
-        ])
-        && request.resource.data.id == voucherId
-        && request.resource.data.teamId == teamId
-        && request.resource.data.quizCode is string
-        && request.resource.data.teamName is string
-        && request.resource.data.rank is number
-        && request.resource.data.title is string
-        && request.resource.data.description is string
-        && request.resource.data.status is string
-        && (!("manualAssignment" in request.resource.data) || request.resource.data.manualAssignment is bool)
-        && (!("createdByManagerKey" in request.resource.data) || request.resource.data.createdByManagerKey is string)
-        && (!("createdByManagerName" in request.resource.data) || request.resource.data.createdByManagerName is string)
-        && (!("deleted" in request.resource.data) || request.resource.data.deleted is bool)
-        && (!("deletedByManagerKey" in request.resource.data) || request.resource.data.deletedByManagerKey is string)
-        && (!("deletedByManagerName" in request.resource.data) || request.resource.data.deletedByManagerName is string);
+        allow create, update: if hasValidVoucherShape(voucherId, teamId);
         allow delete: if true;
       }
 

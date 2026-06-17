@@ -230,6 +230,10 @@ function getTeamSessionRef(code, teamId) {
   return doc(db, "quizEvents", getEventId(code), "teamSessions", teamId);
 }
 
+function getEventVoucherRef(eventId, voucherId) {
+  return doc(db, "quizEvents", eventId, "vouchers", voucherId);
+}
+
 function getTeammateRef(teamId, teammateId) {
   return doc(db, "teams", teamId, "teammates", teammateId);
 }
@@ -876,6 +880,23 @@ function getVoucherIdentityKey(entry) {
   if (!eventId || !teamId || !sourceSessionId) return "";
 
   return `${eventId}__${teamId}__${sourceSessionId}`;
+}
+
+function mergeVoucherDocs(primaryDocs = [], fallbackDocs = []) {
+  const mergedById = new Map();
+
+  fallbackDocs.forEach((voucher) => {
+    mergedById.set(voucher.id, voucher);
+  });
+
+  primaryDocs.forEach((voucher) => {
+    mergedById.set(voucher.id, {
+      ...mergedById.get(voucher.id),
+      ...voucher,
+    });
+  });
+
+  return [...mergedById.values()];
 }
 
 function buildVoucherEntries(sessions = [], voucherDocs = [], pubQuizzes = [], options = {}) {
@@ -2176,21 +2197,96 @@ function App() {
   }, [activeManager, sessionData]);
 
   useEffect(() => {
+    if (activeManager) {
+      let cancelled = false;
+      const quizEventsRef = collection(db, "quizEvents");
+      const legacyVouchersRef = collectionGroup(db, "vouchers");
+
+      async function loadAllEventVouchers() {
+        try {
+          const eventsSnapshot = await getDocs(quizEventsRef);
+          const [voucherSnapshots, legacySnapshot] = await Promise.all([
+            Promise.all(
+              eventsSnapshot.docs.map((eventDoc) =>
+                getDocs(collection(db, "quizEvents", eventDoc.id, "vouchers")),
+              ),
+            ),
+            getDocs(legacyVouchersRef),
+          ]);
+
+          const primaryDocs = voucherSnapshots.flatMap((snapshot) =>
+            snapshot.docs.map((voucherDoc) => ({ id: voucherDoc.id, ...voucherDoc.data() })),
+          );
+          const fallbackDocs = legacySnapshot.docs.map((voucherDoc) => ({
+            id: voucherDoc.id,
+            ...voucherDoc.data(),
+          }));
+
+          if (cancelled) return;
+
+          setAllVoucherDocs(mergeVoucherDocs(primaryDocs, fallbackDocs));
+        } catch (error) {
+          console.error("EVENT VOUCHERS LOAD ERROR:", error);
+        }
+      }
+
+      loadAllEventVouchers();
+
+      const unsubscribe = onSnapshot(quizEventsRef, () => {
+        loadAllEventVouchers();
+      });
+
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }
+
+    if (!sessionData?.lobbyCode) return undefined;
+
+    let cancelled = false;
+    const eventId = getEventId(sessionData.lobbyCode);
     const teamVoucherPath =
       sessionData?.teamId || sessionData?.teamNameNormalized || sessionId || null;
+    const eventVouchersRef = collection(db, "quizEvents", eventId, "vouchers");
 
-    if (!activeManager && !teamVoucherPath) return undefined;
+    async function loadTeamEventVouchers() {
+      try {
+        const [eventSnapshot, legacySnapshot] = await Promise.all([
+          getDocs(eventVouchersRef),
+          teamVoucherPath
+            ? getDocs(collection(db, "teams", teamVoucherPath, "vouchers"))
+            : Promise.resolve({ docs: [] }),
+        ]);
 
-    const vouchersQuery = activeManager
-      ? collectionGroup(db, "vouchers")
-      : collection(db, "teams", teamVoucherPath, "vouchers");
+        if (cancelled) return;
 
-    return onSnapshot(vouchersQuery, (snapshot) => {
-      setAllVoucherDocs(
-        snapshot.docs.map((voucherDoc) => ({ id: voucherDoc.id, ...voucherDoc.data() })),
-      );
+        const primaryDocs = eventSnapshot.docs.map((voucherDoc) => ({
+          id: voucherDoc.id,
+          ...voucherDoc.data(),
+        }));
+        const fallbackDocs = legacySnapshot.docs.map((voucherDoc) => ({
+          id: voucherDoc.id,
+          ...voucherDoc.data(),
+        }));
+
+        setAllVoucherDocs(mergeVoucherDocs(primaryDocs, fallbackDocs));
+      } catch (error) {
+        console.error("TEAM EVENT VOUCHERS LOAD ERROR:", error);
+      }
+    }
+
+    loadTeamEventVouchers();
+
+    const unsubscribe = onSnapshot(eventVouchersRef, () => {
+      loadTeamEventVouchers();
     });
-  }, [activeManager, sessionData?.teamId, sessionData?.teamNameNormalized, sessionId]);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [activeManager, sessionData?.lobbyCode, sessionData?.teamId, sessionData?.teamNameNormalized, sessionId]);
 
   useEffect(() => {
     if (!sessionData?.lobbyCode) return undefined;
@@ -4339,13 +4435,19 @@ function App() {
       return { ok: false, message: "Gutschein konnte nicht zugeordnet werden." };
     }
 
-    const voucherRef = doc(db, "teams", targetTeamId, "vouchers", voucher.id);
+    const eventId =
+      voucher.eventId ||
+      sourceSession?.eventId ||
+      getEventId(voucher.quizCode || sourceSession?.lobbyCode || "");
+
+    if (!eventId) {
+      return { ok: false, message: "Event fuer Gutschein konnte nicht gefunden werden." };
+    }
+
+    const voucherRef = getEventVoucherRef(eventId, voucher.id);
     const nextVoucherData = {
       id: voucher.id,
-      eventId:
-        voucher.eventId ||
-        sourceSession?.eventId ||
-        getEventId(voucher.quizCode || sourceSession?.lobbyCode || ""),
+      eventId,
       quizCode:
         voucher.quizCode || sourceSession?.quizCode || sourceSession?.lobbyCode || "",
       quizLabel:
@@ -4396,32 +4498,37 @@ function App() {
     };
 
     try {
-      await setDoc(
-        voucherRef,
-        {
-          ...nextVoucherData,
-          updatedAt: serverTimestamp(),
-          ...(nextStatus === "requested"
-            ? {
+      const persistedVoucherData = {
+        ...nextVoucherData,
+        updatedAt: serverTimestamp(),
+        ...(nextStatus === "requested"
+          ? {
+            requestedAt: voucher.requestedAt || serverTimestamp(),
+              redeemedAt: deleteField(),
+            }
+          : {}),
+        ...(nextStatus === "redeemed"
+          ? {
               requestedAt: voucher.requestedAt || serverTimestamp(),
-                redeemedAt: deleteField(),
-              }
-            : {}),
-          ...(nextStatus === "redeemed"
-            ? {
-                requestedAt: voucher.requestedAt || serverTimestamp(),
-                redeemedAt: serverTimestamp(),
-              }
-            : {}),
-          ...(nextStatus === "earned"
-            ? {
-                requestedAt: deleteField(),
-                redeemedAt: deleteField(),
-              }
-            : {}),
-        },
-        { merge: true },
-      );
+              redeemedAt: serverTimestamp(),
+            }
+          : {}),
+        ...(nextStatus === "earned"
+          ? {
+              requestedAt: deleteField(),
+              redeemedAt: deleteField(),
+            }
+          : {}),
+      };
+
+      await Promise.all([
+        setDoc(voucherRef, persistedVoucherData, { merge: true }),
+        setDoc(
+          doc(db, "teams", targetTeamId, "vouchers", voucher.id),
+          persistedVoucherData,
+          { merge: true },
+        ),
+      ]);
       setAllVoucherDocs((currentDocs) => {
         const remainingDocs = currentDocs.filter((currentDoc) => currentDoc.id !== voucher.id);
         return [...remainingDocs, nextVoucherData];
@@ -4523,16 +4630,21 @@ function App() {
     };
 
     try {
-      await setDoc(
-        doc(db, "teams", teamId, "vouchers", voucherId),
-        {
-          ...nextVoucherData,
-          awardedAt: awardedAt || serverTimestamp(),
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
+      const persistedVoucherData = {
+        ...nextVoucherData,
+        awardedAt: awardedAt || serverTimestamp(),
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+
+      await Promise.all([
+        setDoc(getEventVoucherRef(eventId, voucherId), persistedVoucherData, {
+          merge: true,
+        }),
+        setDoc(doc(db, "teams", teamId, "vouchers", voucherId), persistedVoucherData, {
+          merge: true,
+        }),
+      ]);
       setAllVoucherDocs((currentDocs) => {
         const remainingDocs = currentDocs.filter((currentDoc) => currentDoc.id !== voucherId);
         return [...remainingDocs, nextVoucherData];
@@ -4585,16 +4697,22 @@ function App() {
         deletedByManagerName: activeManager.name || activeManager.key || "Head Manager",
         updatedAt: new Date(),
       };
-      await setDoc(
-        doc(db, "teams", voucher.teamId, "vouchers", voucher.id),
-        {
-          ...deletedVoucherData,
-          awardedAt: voucher.awardedAt || serverTimestamp(),
-          deletedAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
+      const eventId = voucher.eventId || getEventId(voucher.quizCode || "");
+      const persistedVoucherData = {
+        ...deletedVoucherData,
+        awardedAt: voucher.awardedAt || serverTimestamp(),
+        deletedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+
+      await Promise.all([
+        setDoc(getEventVoucherRef(eventId, voucher.id), persistedVoucherData, {
+          merge: true,
+        }),
+        setDoc(doc(db, "teams", voucher.teamId, "vouchers", voucher.id), persistedVoucherData, {
+          merge: true,
+        }),
+      ]);
       setAllVoucherDocs((currentDocs) => {
         const remainingDocs = currentDocs.filter((currentDoc) => currentDoc.id !== voucher.id);
         return [...remainingDocs, deletedVoucherData];
@@ -4754,6 +4872,30 @@ function App() {
       const voucherId = `${eventId}__${row.teamId}__rank${row.rank}`;
       const matchingSession = registeredTeams.find((team) => team.id === row.teamId);
 
+      voucherBatch.set(
+        getEventVoucherRef(eventId, voucherId),
+        {
+          id: voucherId,
+          eventId,
+          quizCode: sessionData?.lobbyCode || "",
+          quizLabel: quizLabel || sessionData?.lobbyCode || "Pubquiz",
+          teamId: row.teamId,
+          teamName: row.teamName || "",
+          rank: Number(row.rank),
+          title: reward?.title || `Platz ${row.rank} Gutschein`,
+          description: reward?.description || "Gewinn aus dem Pubquiz",
+          totalPoints: Number(row.totalPoints) || 0,
+          sourceSessionId: matchingSession?.id || row.teamId,
+          awardedAt: getCompletionValue(matchingSession) || serverTimestamp(),
+          status: "earned",
+          autoCreatedFromRanking: true,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          createdByManagerKey: activeManager.key || "",
+          createdByManagerName: activeManager.name || activeManager.key || "Manager",
+        },
+        { merge: true },
+      );
       voucherBatch.set(
         doc(db, "teams", row.teamId, "vouchers", voucherId),
         {
