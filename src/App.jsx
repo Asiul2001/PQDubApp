@@ -755,6 +755,61 @@ function getVoucherReward(rank) {
   return null;
 }
 
+function buildDailyRankingRows(registeredTeams = [], lobbyData = null) {
+  return getDailyRankingWithTiebreakers(registeredTeams, lobbyData).ranking.map(
+    (team, index) => ({
+      rank: index + 1,
+      teamId: team.teamId || team.teamNameNormalized || team.id,
+      teamName: team.teamName,
+      totalPoints: team.totalPoints || 0,
+      tiebreakerEstimate: getEstimateValue(lobbyData, team.id),
+      tiebreakerDistance: getTiebreakerDistance(lobbyData, team.id),
+      podiumBonusPoints: getPodiumBonusForRank(index),
+    }),
+  );
+}
+
+function normalizeManualRankingOrder(teamIds = [], rows = []) {
+  const seen = new Set();
+  const validTeamIds = rows
+    .map((row) => row.teamId)
+    .filter((teamId) => Boolean(teamId));
+  const validTeamIdSet = new Set(validTeamIds);
+  const normalizedOrder = [];
+
+  teamIds.forEach((teamId) => {
+    if (!validTeamIdSet.has(teamId) || seen.has(teamId)) return;
+    seen.add(teamId);
+    normalizedOrder.push(teamId);
+  });
+
+  validTeamIds.forEach((teamId) => {
+    if (seen.has(teamId)) return;
+    seen.add(teamId);
+    normalizedOrder.push(teamId);
+  });
+
+  return normalizedOrder;
+}
+
+function applyManualRankingOrder(rows = [], teamIds = []) {
+  const normalizedOrder = normalizeManualRankingOrder(teamIds, rows);
+  const rowMap = new Map(rows.map((row) => [row.teamId, row]));
+
+  return normalizedOrder
+    .map((teamId, index) => {
+      const row = rowMap.get(teamId);
+      if (!row) return null;
+
+      return {
+        ...row,
+        rank: index + 1,
+        podiumBonusPoints: getPodiumBonusForRank(index),
+      };
+    })
+    .filter(Boolean);
+}
+
 function getVoucherIdForSession(session) {
   const rank = Number(session?.rankDaily);
   const eventId = session?.eventId || getEventId(session?.lobbyCode || session?.quizCode || "");
@@ -1712,6 +1767,8 @@ function App() {
   const [allTeamSessions, setAllTeamSessions] = useState([]);
   const [teamHistorySessions, setTeamHistorySessions] = useState([]);
   const [allVoucherDocs, setAllVoucherDocs] = useState([]);
+  const [dailyRankingRows, setDailyRankingRows] = useState([]);
+  const [dailyRankingManualOrder, setDailyRankingManualOrder] = useState([]);
   const [globalRankingRows, setGlobalRankingRows] = useState([]);
   const [teamProfiles, setTeamProfiles] = useState([]);
   const [managers, setManagers] = useState([]);
@@ -2002,6 +2059,31 @@ function App() {
   useEffect(() => {
     if (!activeManager && !sessionData) return undefined;
 
+    if (!sessionData?.lobbyCode) return undefined;
+
+    const dailyRankingRef = doc(
+      db,
+      "quizEvents",
+      getEventId(sessionData.lobbyCode),
+      "rankings",
+      "daily",
+    );
+
+    return onSnapshot(dailyRankingRef, (snapshot) => {
+      const data = snapshot.exists() ? snapshot.data() : null;
+      const rows = Array.isArray(data?.rows) ? data.rows : [];
+      const manualOrder = Array.isArray(data?.manualOrderTeamIds)
+        ? data.manualOrderTeamIds
+        : [];
+
+      setDailyRankingRows(rows);
+      setDailyRankingManualOrder(manualOrder);
+    });
+  }, [activeManager, sessionData]);
+
+  useEffect(() => {
+    if (!activeManager && !sessionData) return undefined;
+
     const globalRankingRef = doc(db, "rankings", "globalCurrent");
 
     return onSnapshot(globalRankingRef, (snapshot) => {
@@ -2011,16 +2093,21 @@ function App() {
   }, [activeManager, sessionData]);
 
   useEffect(() => {
-    if (!activeManager) return undefined;
+    const teamVoucherPath =
+      sessionData?.teamId || sessionData?.teamNameNormalized || sessionId || null;
 
-    const vouchersRef = collectionGroup(db, "vouchers");
+    if (!activeManager && !teamVoucherPath) return undefined;
 
-    return onSnapshot(vouchersRef, (snapshot) => {
+    const vouchersQuery = activeManager
+      ? collectionGroup(db, "vouchers")
+      : collection(db, "teams", teamVoucherPath, "vouchers");
+
+    return onSnapshot(vouchersQuery, (snapshot) => {
       setAllVoucherDocs(
         snapshot.docs.map((voucherDoc) => ({ id: voucherDoc.id, ...voucherDoc.data() })),
       );
     });
-  }, [activeManager]);
+  }, [activeManager, sessionData?.teamId, sessionData?.teamNameNormalized, sessionId]);
 
   useEffect(() => {
     if (!sessionData?.lobbyCode) return undefined;
@@ -2043,19 +2130,119 @@ function App() {
     });
   }, [sessionData?.lobbyCode]);
 
+  async function persistDailyRankingState(rows, options = {}) {
+    if (!sessionData?.lobbyCode) {
+      return { ok: false, message: "Kein aktives Event fuer das Ranking gefunden." };
+    }
+
+    const normalizedRows = rows.map((row, index) => ({
+      ...row,
+      rank: index + 1,
+      podiumBonusPoints: getPodiumBonusForRank(index),
+    }));
+    const manualOrderTeamIds = normalizeManualRankingOrder(
+      options.manualOrderTeamIds || normalizedRows.map((row) => row.teamId),
+      normalizedRows,
+    );
+    const eventId = getEventId(sessionData.lobbyCode);
+    const rowsByTeamId = new Map(normalizedRows.map((row) => [row.teamId, row]));
+    const teamsForGlobalRanking = allTeams.length > 0 ? allTeams : registeredTeams;
+    const nextAllTeams = teamsForGlobalRanking.map((team) => {
+      if (team.lobbyCode !== sessionData.lobbyCode) {
+        return team;
+      }
+
+      const row = rowsByTeamId.get(team.id);
+      if (!row) return team;
+
+      return {
+        ...team,
+        finalDailyPointsForGlobal: (team.totalPoints || 0) + (row.podiumBonusPoints || 0),
+        podiumBonusPoints: row.podiumBonusPoints || 0,
+        rankDaily: row.rank,
+      };
+    });
+    const globalRows = aggregateYearlyRanking(nextAllTeams).map((team, index) => ({
+      rank: index + 1,
+      teamId: team.teamNameNormalized || team.id,
+      teamName: team.teamName,
+      totalGlobalPoints: team.totalPoints || 0,
+      totalDailyPoints: team.totalQuizPoints || 0,
+      totalPodiumBonusPoints:
+        (team.totalPoints || 0) - (team.totalQuizPoints || 0),
+      gamesPlayed: team.sessions || 0,
+    }));
+    const batch = writeBatch(db);
+
+    batch.set(
+      doc(db, "quizEvents", eventId, "rankings", "daily"),
+      {
+        eventId,
+        quizCode: sessionData.lobbyCode,
+        rows: normalizedRows,
+        manualOrderTeamIds,
+        updatedAt: serverTimestamp(),
+        ...(options.trackManualChange
+          ? {
+              manualOrderUpdatedAt: serverTimestamp(),
+              manualOrderUpdatedByManagerKey: activeManager?.key || "",
+              manualOrderUpdatedByManagerName:
+                activeManager?.name || activeManager?.key || "Manager",
+            }
+          : {}),
+      },
+      { merge: true },
+    );
+
+    normalizedRows.forEach((row) => {
+      if (!row.teamId) return;
+
+      const matchingTeam = registeredTeams.find((team) => team.id === row.teamId);
+      const totalPoints =
+        Number(matchingTeam?.totalPoints) || Number(row.totalPoints) || 0;
+
+      batch.set(
+        getTeamSessionRef(sessionData.lobbyCode, row.teamId),
+        {
+          podiumBonusPoints: row.podiumBonusPoints || 0,
+          finalDailyPointsForGlobal: totalPoints + (row.podiumBonusPoints || 0),
+          rankDaily: row.rank,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+    });
+
+    batch.set(
+      doc(db, "rankings", "globalCurrent"),
+      {
+        rows: globalRows,
+        seasonId: "2026",
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    await batch.commit();
+    setDailyRankingRows(normalizedRows);
+    setDailyRankingManualOrder(manualOrderTeamIds);
+    setGlobalRankingRows(globalRows);
+
+    return { ok: true, rows: normalizedRows, globalRows };
+  }
+
   useEffect(() => {
     if (!activeManager || !sessionData?.lobbyCode) return;
 
-    const dailyRows = getDailyRankingWithTiebreakers(registeredTeams, lobbyData)
-      .ranking.map((team, index) => ({
-        rank: index + 1,
-        teamId: team.teamId || team.teamNameNormalized || team.id,
-        teamName: team.teamName,
-        totalPoints: team.totalPoints || 0,
-        tiebreakerEstimate: getEstimateValue(lobbyData, team.id),
-        tiebreakerDistance: getTiebreakerDistance(lobbyData, team.id),
-        podiumBonusPoints: getPodiumBonusForRank(index),
-      }));
+    const computedDailyRows = buildDailyRankingRows(registeredTeams, lobbyData);
+    const nextManualOrderTeamIds = normalizeManualRankingOrder(
+      dailyRankingManualOrder,
+      computedDailyRows,
+    );
+    const dailyRows = applyManualRankingOrder(
+      computedDailyRows,
+      nextManualOrderTeamIds,
+    );
     const finalRound = getLastQuizRound(quizRounds);
     const eventFinished =
       Boolean(finalRound) &&
@@ -2093,6 +2280,7 @@ function App() {
         eventId: getEventId(sessionData.lobbyCode),
         quizCode: sessionData.lobbyCode,
         rows: dailyRows,
+        manualOrderTeamIds: nextManualOrderTeamIds,
         updatedAt: serverTimestamp(),
       },
       { merge: true },
@@ -2150,7 +2338,16 @@ function App() {
         console.error("SESSION BONUS SNAPSHOT ERROR:", error),
       );
     }
-  }, [activeManager, allTeams, lobbyData, now, quizRounds, registeredTeams, sessionData?.lobbyCode]);
+  }, [
+    activeManager,
+    allTeams,
+    dailyRankingManualOrder,
+    lobbyData,
+    now,
+    quizRounds,
+    registeredTeams,
+    sessionData?.lobbyCode,
+  ]);
 
   function updateAnswerDraft(questionId, value) {
     setAnswerDrafts((currentDrafts) => ({
@@ -4222,6 +4419,171 @@ function App() {
     }
   }
 
+  async function saveDailyRankingOrder(teamIds) {
+    if (!isAdmin || !activeManager) {
+      return { ok: false, message: "Nur Manager koennen das Ranking speichern." };
+    }
+
+    const computedRows = buildDailyRankingRows(registeredTeams, lobbyData);
+    const orderedRows = applyManualRankingOrder(computedRows, teamIds);
+
+    if (orderedRows.length === 0) {
+      return { ok: false, message: "Es gibt kein Ranking zum Speichern." };
+    }
+
+    try {
+      const persistResult = await persistDailyRankingState(orderedRows, {
+        manualOrderTeamIds: teamIds,
+        trackManualChange: true,
+      });
+
+      return {
+        ok: true,
+        rows: persistResult.rows,
+        message: "Tagesranking gespeichert. Die Reihenfolge bleibt jetzt beim Neuladen erhalten.",
+      };
+    } catch (error) {
+      console.error("SAVE DAILY RANKING ERROR:", error);
+      return {
+        ok: false,
+        message: `Ranking konnte nicht gespeichert werden: ${error.message}`,
+      };
+    }
+  }
+
+  async function createRankingVouchers(teamIds) {
+    if (!isAdmin || !activeManager) {
+      return { ok: false, message: "Nur Manager koennen Gutscheine erstellen." };
+    }
+
+    const saveResult = await saveDailyRankingOrder(teamIds);
+    if (!saveResult.ok) return saveResult;
+
+    const orderedRows = saveResult.rows || applyManualRankingOrder(
+      buildDailyRankingRows(registeredTeams, lobbyData),
+      teamIds,
+    );
+    const topRows = orderedRows
+      .filter((row) => row?.teamId && [1, 2, 3].includes(Number(row.rank)))
+      .slice(0, 3);
+
+    if (topRows.length === 0) {
+      return { ok: false, message: "Keine gespeicherten Podiumsplaetze gefunden." };
+    }
+
+    const eventId = getEventId(sessionData?.lobbyCode || "");
+    const conflictingRanks = [];
+    const existingByRank = new Map();
+
+    allVoucherDocs.forEach((voucher) => {
+      if (
+        voucher.deleted ||
+        (voucher.eventId || getEventId(voucher.quizCode || "")) !== eventId
+      ) {
+        return;
+      }
+
+      const voucherRank = Number(voucher.rank);
+      if (![1, 2, 3].includes(voucherRank)) return;
+      existingByRank.set(voucherRank, voucher);
+    });
+
+    topRows.forEach((row) => {
+      const existingVoucher = existingByRank.get(Number(row.rank));
+
+      if (existingVoucher && existingVoucher.teamId !== row.teamId) {
+        conflictingRanks.push(Number(row.rank));
+      }
+    });
+
+    if (conflictingRanks.length > 0) {
+      return {
+        ok: false,
+        message:
+          `Fuer Platz ${conflictingRanks.join(", ")} gibt es schon Gutscheine mit einem anderen Team. ` +
+          "Bitte diese zuerst im Gutschein-Bereich korrigieren oder loeschen.",
+      };
+    }
+
+    const voucherBatch = writeBatch(db);
+    let createdCount = 0;
+    const quizLabel = getQuizLabelForSession(
+      {
+        eventId,
+        lobbyCode: sessionData?.lobbyCode || "",
+        quizCode: sessionData?.lobbyCode || "",
+      },
+      pubQuizzes,
+    );
+
+    topRows.forEach((row) => {
+      const existingVoucher = existingByRank.get(Number(row.rank));
+      if (existingVoucher) return;
+
+      const reward = getVoucherReward(Number(row.rank));
+      const voucherId = `${eventId}__${row.teamId}__rank${row.rank}`;
+      const matchingSession = registeredTeams.find((team) => team.id === row.teamId);
+
+      voucherBatch.set(
+        doc(db, "teams", row.teamId, "vouchers", voucherId),
+        {
+          id: voucherId,
+          eventId,
+          quizCode: sessionData?.lobbyCode || "",
+          quizLabel: quizLabel || sessionData?.lobbyCode || "Pubquiz",
+          teamId: row.teamId,
+          teamName: row.teamName || "",
+          rank: Number(row.rank),
+          title: reward?.title || `Platz ${row.rank} Gutschein`,
+          description: reward?.description || "Gewinn aus dem Pubquiz",
+          totalPoints: Number(row.totalPoints) || 0,
+          sourceSessionId: matchingSession?.id || row.teamId,
+          awardedAt: getCompletionValue(matchingSession) || serverTimestamp(),
+          status: "earned",
+          autoCreatedFromRanking: true,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          createdByManagerKey: activeManager.key || "",
+          createdByManagerName: activeManager.name || activeManager.key || "Manager",
+        },
+        { merge: true },
+      );
+      createdCount += 1;
+    });
+
+    if (createdCount === 0) {
+      return {
+        ok: true,
+        message: "Die Gutscheine fuer dieses Podium existieren bereits.",
+      };
+    }
+
+    voucherBatch.set(
+      doc(db, "quizEvents", eventId, "rankings", "daily"),
+      {
+        voucherBatchCreatedAt: serverTimestamp(),
+        voucherBatchCreatedByManagerKey: activeManager.key || "",
+        voucherBatchCreatedByManagerName: activeManager.name || activeManager.key || "Manager",
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    try {
+      await voucherBatch.commit();
+      return {
+        ok: true,
+        message: `${createdCount} Gutschein${createdCount === 1 ? "" : "e"} aus dem gespeicherten Ranking erstellt.`,
+      };
+    } catch (error) {
+      console.error("CREATE RANKING VOUCHERS ERROR:", error);
+      return {
+        ok: false,
+        message: `Gutscheine konnten nicht erstellt werden: ${error.message}`,
+      };
+    }
+  }
+
   if (!sessionData) {
     return (
       <MobileLobbyScreen
@@ -4308,12 +4670,15 @@ function App() {
         <RankingScreen
           isAdmin={isAdmin}
           allTeams={allTeams.length ? allTeams : registeredTeams}
+          dailyRankingRows={dailyRankingRows}
           globalRankingRows={globalRankingRows}
           lobbyData={lobbyData}
+          onCreateRankingVouchers={createRankingVouchers}
           onOpenAdmin={() => setAppView("admin")}
           onOpenFaq={() => setAppView("faq")}
           onOpenMain={() => setAppView("main")}
           onOpenVouchers={() => setAppView("vouchers")}
+          onSaveDailyRankingOrder={saveDailyRankingOrder}
           registeredTeams={registeredTeams}
           sessionData={sessionData}
           sessionId={sessionId}
@@ -5843,21 +6208,34 @@ function AppMenu({
 
 function RankingScreen({
   allTeams,
+  dailyRankingRows,
   globalRankingRows,
   isAdmin,
   lobbyData,
+  onCreateRankingVouchers,
   onOpenAdmin,
   onOpenFaq,
   onOpenMain,
   onOpenVouchers,
+  onSaveDailyRankingOrder,
   registeredTeams,
   sessionData,
   sessionId,
 }) {
   const [rankingTab, setRankingTab] = useState("daily");
+  const [draftDailyOrderTeamIds, setDraftDailyOrderTeamIds] = useState([]);
+  const [rankingMessage, setRankingMessage] = useState("");
+  const [rankingActionBusy, setRankingActionBusy] = useState(false);
   const isNarrow = useIsNarrowScreen();
   const dailyRanking = getDailyRankingWithTiebreakers(registeredTeams, lobbyData);
-  const dailyTeams = dailyRanking.ranking;
+  const fallbackDailyRows = useMemo(
+    () => buildDailyRankingRows(registeredTeams, lobbyData),
+    [registeredTeams, lobbyData],
+  );
+  const persistedDailyRows = useMemo(
+    () => (dailyRankingRows?.length > 0 ? dailyRankingRows : fallbackDailyRows),
+    [dailyRankingRows, fallbackDailyRows],
+  );
   const yearlyTeams =
     globalRankingRows?.length > 0
       ? globalRankingRows.map((row) => ({
@@ -5868,21 +6246,91 @@ function RankingScreen({
           sessions: row.gamesPlayed || 0,
         }))
       : aggregateYearlyRanking(allTeams || registeredTeams);
+  const persistedDailyOrderTeamIds = useMemo(
+    () => persistedDailyRows.map((row) => row.teamId),
+    [persistedDailyRows],
+  );
+  const editableDailyRows = useMemo(
+    () =>
+      draftDailyOrderTeamIds.length > 0
+        ? applyManualRankingOrder(persistedDailyRows, draftDailyOrderTeamIds)
+        : persistedDailyRows,
+    [draftDailyOrderTeamIds, persistedDailyRows],
+  );
+  const dailyTeams = useMemo(
+    () =>
+      editableDailyRows.map((row) => ({
+        id: row.teamId,
+        teamId: row.teamId,
+        teamName: row.teamName,
+        totalPoints: Number(row.totalPoints) || 0,
+        tiebreakerEstimate:
+          row.tiebreakerEstimate ?? getEstimateValue(lobbyData, row.teamId),
+        tiebreakerDistance:
+          row.tiebreakerDistance ?? getTiebreakerDistance(lobbyData, row.teamId),
+      })),
+    [editableDailyRows, lobbyData],
+  );
   const visibleYearlyTeams = yearlyTeams.filter(
     (team) => !isHiddenFromYearlyRanking(team.id || team.teamName),
   );
   const rankingTeams = rankingTab === "daily" ? dailyTeams : visibleYearlyTeams;
+  const hasUnsavedDailyOrder =
+    editableDailyRows.map((row) => row.teamId).join("|") !==
+    persistedDailyOrderTeamIds.join("|");
   const hasDailyPodiumTie = dailyRanking.tieGroups.length > 0;
   const currentTeamIsTiebreakerEligible = dailyRanking.tieGroups.some((group) =>
     group.teams.some((team) => team.id === sessionId),
   );
-  const allTeamsReadyForRanking =
-    registeredTeams.length > 0 &&
-    registeredTeams.every((team) => Boolean(lobbyData?.finalReady?.[team.id]));
   const hasTiebreakerAnswer = Number.isFinite(Number(lobbyData?.tiebreakerAnswer));
   const currentTeamRank =
     dailyTeams.findIndex((team) => team.id === sessionId) + 1;
   const currentTeamSubmission = getTiebreakerSubmission(lobbyData, sessionId);
+
+  function moveDailyTeam(teamId, direction) {
+    setDraftDailyOrderTeamIds((currentDraft) => {
+      const currentOrder =
+        currentDraft.length > 0 ? [...currentDraft] : [...persistedDailyOrderTeamIds];
+      const currentIndex = currentOrder.findIndex((currentTeamId) => currentTeamId === teamId);
+      if (currentIndex === -1) return currentDraft;
+
+      const nextIndex = currentIndex + direction;
+      if (nextIndex < 0 || nextIndex >= currentOrder.length) return currentDraft;
+
+      const [movedTeamId] = currentOrder.splice(currentIndex, 1);
+      currentOrder.splice(nextIndex, 0, movedTeamId);
+
+      return currentOrder;
+    });
+  }
+
+  async function handleSaveDailyRankingOrder() {
+    if (!onSaveDailyRankingOrder) return;
+
+    setRankingActionBusy(true);
+    const result = await onSaveDailyRankingOrder(
+      editableDailyRows.map((row) => row.teamId),
+    );
+    setRankingActionBusy(false);
+    if (result.ok) {
+      setDraftDailyOrderTeamIds([]);
+    }
+    setRankingMessage(result.message || "");
+  }
+
+  async function handleCreateRankingVouchers() {
+    if (!onCreateRankingVouchers) return;
+
+    setRankingActionBusy(true);
+    const result = await onCreateRankingVouchers(
+      editableDailyRows.map((row) => row.teamId),
+    );
+    setRankingActionBusy(false);
+    if (result.ok) {
+      setDraftDailyOrderTeamIds([]);
+    }
+    setRankingMessage(result.message || "");
+  }
 
   return (
     <main style={pageStyle}>
@@ -5941,6 +6389,70 @@ function RankingScreen({
             );
           })}
         </div>
+
+        {isAdmin && rankingTab === "daily" && (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 10,
+              alignItems: "center",
+              marginBottom: 18,
+            }}
+          >
+            <button
+              onClick={handleSaveDailyRankingOrder}
+              disabled={rankingActionBusy || !hasUnsavedDailyOrder}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid #0f766e",
+                background:
+                  rankingActionBusy || !hasUnsavedDailyOrder ? "#0f172a" : "#134e4a",
+                color: rankingActionBusy || !hasUnsavedDailyOrder ? "#64748b" : "#ccfbf1",
+                fontWeight: 700,
+                cursor:
+                  rankingActionBusy || !hasUnsavedDailyOrder ? "not-allowed" : "pointer",
+              }}
+            >
+              Reihenfolge speichern
+            </button>
+            <button
+              onClick={handleCreateRankingVouchers}
+              disabled={rankingActionBusy || editableDailyRows.length === 0}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid #2563eb",
+                background:
+                  rankingActionBusy || editableDailyRows.length === 0
+                    ? "#0f172a"
+                    : "#1d4ed8",
+                color:
+                  rankingActionBusy || editableDailyRows.length === 0
+                    ? "#64748b"
+                    : "#dbeafe",
+                fontWeight: 700,
+                cursor:
+                  rankingActionBusy || editableDailyRows.length === 0
+                    ? "not-allowed"
+                    : "pointer",
+              }}
+            >
+              Gutscheine erstellen
+            </button>
+            <span style={{ color: "#94a3b8", fontSize: 13 }}>
+              Alle Manager koennen hier die Tagesreihenfolge speichern. Der
+              Head Manager behaelt weiterhin die Sonderrechte im Gutschein-Bereich.
+            </span>
+          </div>
+        )}
+
+        {rankingMessage && (
+          <p style={{ marginTop: 0, marginBottom: 18, color: "#93c5fd" }}>
+            {rankingMessage}
+          </p>
+        )}
 
         {rankingTab === "daily" && currentTeamSubmission && (
           <div
@@ -6017,7 +6529,10 @@ function RankingScreen({
                 key={team.id}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "52px minmax(0, 1fr) auto",
+                  gridTemplateColumns:
+                    isAdmin && rankingTab === "daily"
+                      ? "52px minmax(0, 1fr) auto auto"
+                      : "52px minmax(0, 1fr) auto",
                   gap: isNarrow ? 8 : 14,
                   alignItems: "center",
                   padding: isNarrow ? "13px 12px" : "14px 16px",
@@ -6073,6 +6588,60 @@ function RankingScreen({
                     Pkt.
                   </span>
                 </strong>
+                {isAdmin && rankingTab === "daily" && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 6,
+                      justifyItems: "end",
+                    }}
+                  >
+                    <button
+                      onClick={() => moveDailyTeam(team.teamId || team.id, -1)}
+                      disabled={rankingActionBusy || index === 0}
+                      style={{
+                        minWidth: 44,
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: "1px solid #334155",
+                        background:
+                          rankingActionBusy || index === 0 ? "#0f172a" : "#1e293b",
+                        color:
+                          rankingActionBusy || index === 0 ? "#64748b" : "#e2e8f0",
+                        fontWeight: 700,
+                        cursor:
+                          rankingActionBusy || index === 0 ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      Hoch
+                    </button>
+                    <button
+                      onClick={() => moveDailyTeam(team.teamId || team.id, 1)}
+                      disabled={rankingActionBusy || index === rankingTeams.length - 1}
+                      style={{
+                        minWidth: 44,
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: "1px solid #334155",
+                        background:
+                          rankingActionBusy || index === rankingTeams.length - 1
+                            ? "#0f172a"
+                            : "#1e293b",
+                        color:
+                          rankingActionBusy || index === rankingTeams.length - 1
+                            ? "#64748b"
+                            : "#e2e8f0",
+                        fontWeight: 700,
+                        cursor:
+                          rankingActionBusy || index === rankingTeams.length - 1
+                            ? "not-allowed"
+                            : "pointer",
+                      }}
+                    >
+                      Runter
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
