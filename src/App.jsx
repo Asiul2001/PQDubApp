@@ -4564,15 +4564,14 @@ function App() {
             }
           : {}),
       };
-
-      await Promise.all([
-        setDoc(voucherRef, persistedVoucherData, { merge: true }),
-        setDoc(
-          doc(db, "teams", targetTeamId, "vouchers", voucher.id),
-          persistedVoucherData,
-          { merge: true },
-        ),
-      ]);
+      const voucherBatch = writeBatch(db);
+      voucherBatch.set(voucherRef, persistedVoucherData, { merge: true });
+      voucherBatch.set(
+        doc(db, "teams", targetTeamId, "vouchers", voucher.id),
+        persistedVoucherData,
+        { merge: true },
+      );
+      await voucherBatch.commit();
       setAllVoucherDocs((currentDocs) => {
         const remainingDocs = currentDocs.filter((currentDoc) => currentDoc.id !== voucher.id);
         return [...remainingDocs, nextVoucherData];
@@ -4680,15 +4679,14 @@ function App() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
-
-      await Promise.all([
-        setDoc(getEventVoucherRef(eventId, voucherId), persistedVoucherData, {
-          merge: true,
-        }),
-        setDoc(doc(db, "teams", teamId, "vouchers", voucherId), persistedVoucherData, {
-          merge: true,
-        }),
-      ]);
+      const voucherBatch = writeBatch(db);
+      voucherBatch.set(getEventVoucherRef(eventId, voucherId), persistedVoucherData, {
+        merge: true,
+      });
+      voucherBatch.set(doc(db, "teams", teamId, "vouchers", voucherId), persistedVoucherData, {
+        merge: true,
+      });
+      await voucherBatch.commit();
       setAllVoucherDocs((currentDocs) => {
         const remainingDocs = currentDocs.filter((currentDoc) => currentDoc.id !== voucherId);
         return [...remainingDocs, nextVoucherData];
@@ -4748,15 +4746,14 @@ function App() {
         deletedAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       };
-
-      await Promise.all([
-        setDoc(getEventVoucherRef(eventId, voucher.id), persistedVoucherData, {
-          merge: true,
-        }),
-        setDoc(doc(db, "teams", voucher.teamId, "vouchers", voucher.id), persistedVoucherData, {
-          merge: true,
-        }),
-      ]);
+      const voucherBatch = writeBatch(db);
+      voucherBatch.set(getEventVoucherRef(eventId, voucher.id), persistedVoucherData, {
+        merge: true,
+      });
+      voucherBatch.set(doc(db, "teams", voucher.teamId, "vouchers", voucher.id), persistedVoucherData, {
+        merge: true,
+      });
+      await voucherBatch.commit();
       setAllVoucherDocs((currentDocs) => {
         const remainingDocs = currentDocs.filter((currentDoc) => currentDoc.id !== voucher.id);
         return [...remainingDocs, deletedVoucherData];
