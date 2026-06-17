@@ -899,149 +899,42 @@ function mergeVoucherDocs(primaryDocs = [], fallbackDocs = []) {
   return [...mergedById.values()];
 }
 
-function buildVoucherEntries(sessions = [], voucherDocs = [], pubQuizzes = [], options = {}) {
-  const { visibleTeamId = null } = options;
-  const activeVoucherDocs = voucherDocs.filter((voucher) => !voucher.deleted);
-  const deletedVoucherIds = new Set(
-    voucherDocs.filter((voucher) => voucher.deleted).map((voucher) => voucher.id),
-  );
-  const deletedVoucherIdentityKeys = new Set(
-    voucherDocs
-      .filter((voucher) => voucher.deleted)
-      .map((voucher) => getVoucherIdentityKey(voucher))
-      .filter(Boolean),
-  );
-  const voucherDocMap = new Map(activeVoucherDocs.map((voucher) => [voucher.id, voucher]));
-  const voucherIdentityMap = new Map(
-    activeVoucherDocs
-      .map((voucher) => [getVoucherIdentityKey(voucher), voucher])
-      .filter(([key]) => Boolean(key)),
-  );
-  const voucherEventRankMap = new Map(
-    activeVoucherDocs
-      .map((voucher) => [getVoucherEventRankKey(voucher), voucher])
-      .filter(([key]) => Boolean(key)),
-  );
-  const derivedEntries = sessions
-    .filter((session) => [1, 2, 3].includes(Number(session?.rankDaily)))
-    .map((session) => {
-      const rank = Number(session.rankDaily);
-      const teamId = session.teamId || session.id || "";
-      const eventId = session.eventId || getEventId(session.lobbyCode || session.quizCode || "");
-      const reward = getVoucherReward(rank);
-      const id = getVoucherIdForSession(session);
-      const eventRankKey = getVoucherEventRankKey({ eventId, rank });
-      const eventRankVoucher = voucherEventRankMap.get(eventRankKey);
-
-      if (
-        eventRankVoucher &&
-        eventRankVoucher.teamId &&
-        eventRankVoucher.teamId !== teamId
-      ) {
-        return null;
-      }
-
-      const identityKey = getVoucherIdentityKey({
-        ...session,
-        sourceSessionId: session.id,
-      });
-      if (deletedVoucherIds.has(id) || (identityKey && deletedVoucherIdentityKeys.has(identityKey))) {
-        return null;
-      }
-      const storedVoucher =
-        voucherDocMap.get(id) || (identityKey ? voucherIdentityMap.get(identityKey) : null);
-
-      return {
-        id,
-        eventId: eventId || null,
-        quizCode: session.quizCode || session.lobbyCode || "",
-        quizLabel:
-          storedVoucher?.quizLabel || getQuizLabelForSession(session, pubQuizzes),
-        awardedAt:
-          storedVoucher?.awardedAt ||
-          getCompletionValue(session) ||
-          session?.createdAt ||
-          null,
-        rank,
-        title: storedVoucher?.title || reward?.title || "Gutschein",
-        description:
-          storedVoucher?.description || reward?.description || "Gewinn aus dem Pubquiz",
-        status: storedVoucher?.status || "earned",
-        requestedAt: storedVoucher?.requestedAt || null,
-        redeemedAt: storedVoucher?.redeemedAt || null,
-        sourceSessionId: session.id,
-        teamId,
-        teamName: session.teamName || "",
-        totalPoints: Number(session.totalPoints) || 0,
-        isManualAssignment: Boolean(storedVoucher?.manualAssignment),
-        isStored: Boolean(storedVoucher),
-      };
-    })
-    .filter(Boolean);
-
-  const existingIds = new Set(derivedEntries.map((entry) => entry.id));
-  const existingIdentityKeys = new Set(
-    derivedEntries.map((entry) => getVoucherIdentityKey(entry)).filter(Boolean),
-  );
-  const docOnlyEntries = activeVoucherDocs
-    .filter(
-      (voucher) =>
-        (!visibleTeamId || voucher.teamId === visibleTeamId) &&
-        !existingIds.has(voucher.id) &&
-        !existingIdentityKeys.has(getVoucherIdentityKey(voucher)),
-    )
-    .map((voucher) => ({
-      id: voucher.id,
-      eventId: voucher.eventId || null,
-      quizCode: voucher.quizCode || "",
-      quizLabel: voucher.quizLabel || voucher.quizCode || "Pubquiz",
-      awardedAt: voucher.awardedAt || voucher.createdAt || null,
-      rank: Number(voucher.rank) || 0,
-      title: voucher.title || "Gutschein",
-      description: voucher.description || "",
-      status: voucher.status || "earned",
-      requestedAt: voucher.requestedAt || null,
-      redeemedAt: voucher.redeemedAt || null,
-      sourceSessionId: voucher.sourceSessionId || "",
-      teamId: voucher.teamId || "",
-      teamName: voucher.teamName || "",
-      totalPoints: Number(voucher.totalPoints) || 0,
-      isManualAssignment: Boolean(voucher.manualAssignment),
-      isStored: true,
-    }));
-
-  return [...derivedEntries, ...docOnlyEntries].sort(
-    (a, b) => getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt),
-  );
+function normalizeStoredVoucher(voucher, pubQuizzes = []) {
+  return {
+    id: voucher.id,
+    eventId: voucher.eventId || null,
+    quizCode: voucher.quizCode || "",
+    quizLabel: voucher.quizLabel || getQuizLabelForSession(voucher, pubQuizzes),
+    awardedAt: voucher.awardedAt || voucher.createdAt || null,
+    rank: Number(voucher.rank) || 0,
+    title: voucher.title || "Gutschein",
+    description: voucher.description || "",
+    status: voucher.status || "earned",
+    requestedAt: voucher.requestedAt || null,
+    redeemedAt: voucher.redeemedAt || null,
+    sourceSessionId: voucher.sourceSessionId || "",
+    teamId: voucher.teamId || "",
+    teamName: voucher.teamName || "",
+    totalPoints: Number(voucher.totalPoints) || 0,
+    isManualAssignment: Boolean(voucher.manualAssignment),
+    isStored: true,
+  };
 }
 
-function buildAllVoucherEntries(allSessions = [], voucherDocs = [], pubQuizzes = []) {
-  const sessionsByTeam = new Map();
-  const teamIds = new Set();
+function buildVoucherEntries(_sessions = [], voucherDocs = [], pubQuizzes = [], options = {}) {
+  const { visibleTeamId = null } = options;
 
-  allSessions.forEach((session) => {
-    const teamId = session.teamId || session.id || session.teamNameNormalized || "";
+  return voucherDocs
+    .filter((voucher) => !voucher.deleted && (!visibleTeamId || voucher.teamId === visibleTeamId))
+    .map((voucher) => normalizeStoredVoucher(voucher, pubQuizzes))
+    .sort((a, b) => getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt));
+}
 
-    if (!teamId) return;
-
-    teamIds.add(teamId);
-    sessionsByTeam.set(teamId, [...(sessionsByTeam.get(teamId) || []), session]);
-  });
-
-  voucherDocs.forEach((voucher) => {
-    if (voucher.teamId) {
-      teamIds.add(voucher.teamId);
-    }
-  });
-
-  return Array.from(teamIds).flatMap((teamId) =>
-    buildVoucherEntries(
-      sessionsByTeam.get(teamId) || [],
-      voucherDocs,
-      pubQuizzes,
-      { visibleTeamId: teamId },
-    ),
-  );
+function buildAllVoucherEntries(_allSessions = [], voucherDocs = [], pubQuizzes = []) {
+  return voucherDocs
+    .filter((voucher) => !voucher.deleted)
+    .map((voucher) => normalizeStoredVoucher(voucher, pubQuizzes))
+    .sort((a, b) => getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt));
 }
 
 function createEmptyPubQuizQuestion(roundIndex, questionIndex) {
