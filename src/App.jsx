@@ -769,6 +769,45 @@ function buildDailyRankingRows(registeredTeams = [], lobbyData = null) {
   );
 }
 
+function buildHistoricalEventRankingRows(teams = [], savedRows = []) {
+  const baseRows = [...teams]
+    .sort((a, b) => {
+      const rankDifference =
+        (Number(a.rankDaily) || Number.MAX_SAFE_INTEGER) -
+        (Number(b.rankDaily) || Number.MAX_SAFE_INTEGER);
+
+      if (rankDifference !== 0) return rankDifference;
+
+      return (
+        (Number(b.totalPoints) || 0) - (Number(a.totalPoints) || 0) ||
+        (a.teamName || "").localeCompare(b.teamName || "")
+      );
+    })
+    .map((team, index) => ({
+      rank: Number(team.rankDaily) || index + 1,
+      teamId: team.teamId || team.id || "",
+      teamName: team.teamName || "",
+      totalPoints: Number(team.totalPoints) || 0,
+      sourceSessionId: team.id || team.teamId || "",
+      podiumBonusPoints:
+        Number(team.podiumBonusPoints) || getPodiumBonusForRank(index),
+    }))
+    .filter((row) => Boolean(row.teamId));
+
+  if (!savedRows.length) {
+    return baseRows.map((row, index) => ({
+      ...row,
+      rank: index + 1,
+      podiumBonusPoints: getPodiumBonusForRank(index),
+    }));
+  }
+
+  return applyManualRankingOrder(
+    baseRows,
+    savedRows.map((row) => row.teamId).filter(Boolean),
+  );
+}
+
 function normalizeManualRankingOrder(teamIds = [], rows = []) {
   const seen = new Set();
   const validTeamIds = rows
@@ -1769,6 +1808,7 @@ function App() {
   const [allVoucherDocs, setAllVoucherDocs] = useState([]);
   const [dailyRankingRows, setDailyRankingRows] = useState([]);
   const [dailyRankingManualOrder, setDailyRankingManualOrder] = useState([]);
+  const [historicalDailyRankingDocs, setHistoricalDailyRankingDocs] = useState([]);
   const [globalRankingRows, setGlobalRankingRows] = useState([]);
   const [teamProfiles, setTeamProfiles] = useState([]);
   const [managers, setManagers] = useState([]);
@@ -2043,6 +2083,49 @@ function App() {
   }, [activeManager]);
 
   useEffect(() => {
+    if (!activeManager) return undefined;
+
+    let cancelled = false;
+    const quizEventsRef = collection(db, "quizEvents");
+
+    async function loadHistoricalDailyRankings() {
+      try {
+        const eventsSnapshot = await getDocs(quizEventsRef);
+        const rankingSnapshots = await Promise.all(
+          eventsSnapshot.docs.map((eventDoc) =>
+            getDoc(doc(db, "quizEvents", eventDoc.id, "rankings", "daily")),
+          ),
+        );
+
+        if (cancelled) return;
+
+        const nextDocs = rankingSnapshots
+          .filter((snapshot) => snapshot.exists())
+          .map((snapshot) => ({
+            eventId: snapshot.data()?.eventId || snapshot.ref.parent.parent?.id || "",
+            ...snapshot.data(),
+          }))
+          .filter((entry) => Boolean(entry.eventId));
+
+        setHistoricalDailyRankingDocs(nextDocs);
+      } catch (error) {
+        console.error("HISTORICAL DAILY RANKINGS LOAD ERROR:", error);
+      }
+    }
+
+    loadHistoricalDailyRankings();
+
+    const unsubscribe = onSnapshot(quizEventsRef, () => {
+      loadHistoricalDailyRankings();
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [activeManager]);
+
+  useEffect(() => {
     if (!activeManager && !sessionData) return undefined;
 
     const teamsRef = collection(db, "teams");
@@ -2226,6 +2309,116 @@ function App() {
     await batch.commit();
     setDailyRankingRows(normalizedRows);
     setDailyRankingManualOrder(manualOrderTeamIds);
+    setGlobalRankingRows(globalRows);
+
+    return { ok: true, rows: normalizedRows, globalRows };
+  }
+
+  async function persistHistoricalDailyRankingState({
+    awardedAt = null,
+    eventId,
+    quizCode = "",
+    rows,
+  }) {
+    if (!eventId) {
+      return { ok: false, message: "Kein Event fuer das Tagesranking gefunden." };
+    }
+
+    const normalizedRows = rows.map((row, index) => ({
+      ...row,
+      rank: index + 1,
+      podiumBonusPoints: getPodiumBonusForRank(index),
+    }));
+    const manualOrderTeamIds = normalizeManualRankingOrder(
+      normalizedRows.map((row) => row.teamId),
+      normalizedRows,
+    );
+    const rowsByTeamId = new Map(normalizedRows.map((row) => [row.teamId, row]));
+    const nextAllTeamSessions = allTeamSessions.map((session) => {
+      if (session.eventId !== eventId) return session;
+
+      const row = rowsByTeamId.get(session.teamId || session.id);
+      if (!row) return session;
+
+      return {
+        ...session,
+        rankDaily: row.rank,
+        podiumBonusPoints: row.podiumBonusPoints || 0,
+        finalDailyPointsForGlobal:
+          (Number(session.totalPoints) || 0) + (row.podiumBonusPoints || 0),
+      };
+    });
+    const globalRows = aggregateYearlyRanking(nextAllTeamSessions).map((team, index) => ({
+      rank: index + 1,
+      teamId: team.teamNameNormalized || team.id,
+      teamName: team.teamName,
+      totalGlobalPoints: team.totalPoints || 0,
+      totalDailyPoints: team.totalQuizPoints || 0,
+      totalPodiumBonusPoints:
+        (team.totalPoints || 0) - (team.totalQuizPoints || 0),
+      gamesPlayed: team.sessions || 0,
+    }));
+    const batch = writeBatch(db);
+
+    batch.set(
+      doc(db, "quizEvents", eventId, "rankings", "daily"),
+      {
+        eventId,
+        quizCode,
+        rows: normalizedRows,
+        manualOrderTeamIds,
+        updatedAt: serverTimestamp(),
+        manualOrderUpdatedAt: serverTimestamp(),
+        manualOrderUpdatedByManagerKey: activeManager?.key || "",
+        manualOrderUpdatedByManagerName:
+          activeManager?.name || activeManager?.key || "Manager",
+        ...(awardedAt ? { awardedAt } : {}),
+      },
+      { merge: true },
+    );
+
+    normalizedRows.forEach((row) => {
+      if (!row.teamId) return;
+
+      batch.set(
+        doc(db, "quizEvents", eventId, "teamSessions", row.teamId),
+        {
+          rankDaily: row.rank,
+          podiumBonusPoints: row.podiumBonusPoints || 0,
+          finalDailyPointsForGlobal:
+            (Number(row.totalPoints) || 0) + (row.podiumBonusPoints || 0),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+    });
+
+    batch.set(
+      doc(db, "rankings", "globalCurrent"),
+      {
+        rows: globalRows,
+        seasonId: "2026",
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    await batch.commit();
+    setAllTeamSessions(nextAllTeamSessions);
+    setHistoricalDailyRankingDocs((currentDocs) => {
+      const nextDoc = {
+        eventId,
+        quizCode,
+        rows: normalizedRows,
+        manualOrderTeamIds,
+        updatedAt: new Date(),
+      };
+
+      return [
+        ...currentDocs.filter((entry) => entry.eventId !== eventId),
+        nextDoc,
+      ];
+    });
     setGlobalRankingRows(globalRows);
 
     return { ok: true, rows: normalizedRows, globalRows };
@@ -4451,6 +4644,43 @@ function App() {
     }
   }
 
+  async function saveHistoricalEventRanking({
+    awardedAt,
+    eventId,
+    quizCode,
+    rows,
+  }) {
+    if (!isAdmin || !activeManager) {
+      return { ok: false, message: "Nur Manager koennen Tagesrankings speichern." };
+    }
+
+    if (!eventId || !rows?.length) {
+      return { ok: false, message: "Bitte zuerst ein Event mit Teams auswaehlen." };
+    }
+
+    try {
+      const persistResult = await persistHistoricalDailyRankingState({
+        awardedAt,
+        eventId,
+        quizCode,
+        rows,
+      });
+
+      return {
+        ok: true,
+        rows: persistResult.rows,
+        message:
+          "Tagesranking fuer dieses Pubquiz gespeichert. Diese Reihenfolge bleibt jetzt fuer das Event erhalten.",
+      };
+    } catch (error) {
+      console.error("SAVE HISTORICAL EVENT RANKING ERROR:", error);
+      return {
+        ok: false,
+        message: `Event-Ranking konnte nicht gespeichert werden: ${error.message}`,
+      };
+    }
+  }
+
   async function createRankingVouchers(teamIds) {
     if (!isAdmin || !activeManager) {
       return { ok: false, message: "Nur Manager koennen Gutscheine erstellen." };
@@ -4692,6 +4922,7 @@ function App() {
     return (
       <>
         <VoucherScreen
+          dailyRankingDocs={historicalDailyRankingDocs}
           allVoucherDocs={allVoucherDocs}
           allTeamSessions={allTeamSessions}
           globalRankingRows={globalRankingRows}
@@ -4705,6 +4936,7 @@ function App() {
           teamHistorySessions={teamHistorySessions}
           teamProfiles={teamProfiles}
           teamSessionId={sessionId}
+          onSaveHistoricalEventRanking={saveHistoricalEventRanking}
           onUpdateVoucherStatus={updateVoucherStatus}
         />
         {issuedTeamPasswordModal}
@@ -4738,6 +4970,7 @@ function App() {
           allTeams={allTeams}
           allTeamSessions={allTeamSessions}
           allVoucherDocs={allVoucherDocs}
+          historicalDailyRankingDocs={historicalDailyRankingDocs}
           globalRankingRows={globalRankingRows}
           lobbyData={lobbyData}
           now={now}
@@ -4754,6 +4987,7 @@ function App() {
           onRevealRoundAnswers={revealRoundAnswers}
           onReopenNewRegistrations={reopenNewRegistrationsForFiveMinutes}
           onSaveManager={saveManager}
+          onSaveHistoricalEventRanking={saveHistoricalEventRanking}
           onSavePubQuiz={savePubQuiz}
           onSubmitManagerAnswerForTeam={submitManagerAnswerForTeam}
           onUpdateTeamPodiumExclusion={updateTeamPodiumExclusion}
@@ -7089,6 +7323,7 @@ function AdminScreen({
   allTeamSessions,
   allVoucherDocs,
   feedbackEntries,
+  historicalDailyRankingDocs,
   globalRankingRows,
   lobbyData,
   managers,
@@ -7107,6 +7342,7 @@ function AdminScreen({
   onRevealRoundAnswers,
   onReopenNewRegistrations,
   onSaveManager,
+  onSaveHistoricalEventRanking,
   onSavePubQuiz,
   onRoundChange,
   onSubmitManagerAnswerForTeam,
@@ -7262,8 +7498,10 @@ function AdminScreen({
             activeManager={activeManager}
             allTeamSessions={allTeamSessions}
             allVoucherDocs={allVoucherDocs}
+            dailyRankingDocs={historicalDailyRankingDocs}
             onCreateVoucherAssignment={onCreateVoucherAssignment}
             onDeleteVoucherAssignment={onDeleteVoucherAssignment}
+            onSaveEventRanking={onSaveHistoricalEventRanking}
             onUpdateVoucherStatus={onUpdateVoucherStatus}
             pubQuizzes={pubQuizzes}
             teamProfiles={teamProfiles}
@@ -7476,13 +7714,17 @@ function VoucherDirectory({
   activeManager,
   allTeamSessions = [],
   allVoucherDocs = [],
+  dailyRankingDocs = [],
   onCreateVoucherAssignment,
   onDeleteVoucherAssignment,
+  onSaveEventRanking,
   onUpdateVoucherStatus,
   pubQuizzes = [],
   teamProfiles = [],
 }) {
   const [viewMode, setViewMode] = useState("event");
+  const [draftEventOrders, setDraftEventOrders] = useState({});
+  const [eventRankingBusy, setEventRankingBusy] = useState(false);
   const [selectedEventId, setSelectedEventId] = useState(null);
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedCreateRank, setSelectedCreateRank] = useState("1");
@@ -7490,6 +7732,7 @@ function VoucherDirectory({
   const [searchTerm, setSearchTerm] = useState("");
   const [voucherMessage, setVoucherMessage] = useState("");
   const isNarrow = useIsNarrowScreen();
+  const canEditEventRankings = Boolean(activeManager && onSaveEventRanking);
   const canEditVouchers = Boolean(activeManager?.headManager);
   const canRedeemVouchers = Boolean(activeManager && onUpdateVoucherStatus);
   const allEffectiveVouchers = buildAllVoucherEntries(
@@ -7580,20 +7823,43 @@ function VoucherDirectory({
     visibleEventSummaries.find((event) => event.eventId === selectedEventId) ||
     visibleEventSummaries[0] ||
     null;
-  const selectedEventSessions = mergeSessionParticipation(
+  const rankingDocByEventId = new Map(
+    dailyRankingDocs.map((entry) => [entry.eventId, entry]),
+  );
+  const selectedEventRankingDoc = rankingDocByEventId.get(selectedEvent?.eventId || "");
+  const selectedEventMergedSessions = mergeSessionParticipation(
     allTeamSessions.filter((session) => session.eventId === selectedEvent?.eventId),
-  ).sort((a, b) => {
-    const rankDifference =
-      (Number(a.rankDaily) || Number.MAX_SAFE_INTEGER) -
-      (Number(b.rankDaily) || Number.MAX_SAFE_INTEGER);
-
-    if (rankDifference !== 0) return rankDifference;
-
-    return (
-      (Number(b.totalPoints) || 0) - (Number(a.totalPoints) || 0) ||
-      (a.teamName || "").localeCompare(b.teamName || "")
+  );
+  const selectedEventBaseRows = buildHistoricalEventRankingRows(
+    selectedEventMergedSessions,
+    selectedEventRankingDoc?.rows || [],
+  );
+  const selectedEventDraftOrder = draftEventOrders[selectedEvent?.eventId || ""] || [];
+  const selectedEventRankingRows =
+    selectedEventDraftOrder.length > 0
+      ? applyManualRankingOrder(selectedEventBaseRows, selectedEventDraftOrder)
+      : selectedEventBaseRows;
+  const selectedEventSessions = selectedEventRankingRows.map((row) => {
+    const matchingSession = selectedEventMergedSessions.find(
+      (session) => (session.teamId || session.id) === row.teamId,
     );
+
+    return {
+      ...matchingSession,
+      id: matchingSession?.id || row.sourceSessionId || row.teamId,
+      teamId: row.teamId,
+      teamName: row.teamName,
+      totalPoints: Number(row.totalPoints) || 0,
+      rankDaily: row.rank,
+      podiumBonusPoints: row.podiumBonusPoints || 0,
+    };
   });
+  const persistedSelectedEventOrder =
+    selectedEventBaseRows.map((row) => row.teamId).join("|");
+  const draftSelectedEventOrder =
+    selectedEventRankingRows.map((row) => row.teamId).join("|");
+  const hasUnsavedEventRankingOrder =
+    draftSelectedEventOrder !== persistedSelectedEventOrder;
   const selectedEventVouchers = allEffectiveVouchers
     .filter((voucher) => voucher.eventId === selectedEvent?.eventId)
     .sort(
@@ -7643,6 +7909,52 @@ function VoucherDirectory({
       setSelectedCreateTeamId(selectedEventSessions[0]?.teamId || selectedEventSessions[0]?.id || "");
     }
   }, [selectedCreateTeamId, selectedEventSessions]);
+
+  function moveSelectedEventTeam(teamId, direction) {
+    if (!selectedEvent?.eventId) return;
+
+    setDraftEventOrders((currentDrafts) => {
+      const eventKey = selectedEvent.eventId;
+      const currentOrder = currentDrafts[eventKey]?.length
+        ? [...currentDrafts[eventKey]]
+        : [...selectedEventBaseRows.map((row) => row.teamId)];
+      const currentIndex = currentOrder.findIndex((currentTeamId) => currentTeamId === teamId);
+
+      if (currentIndex === -1) return currentDrafts;
+
+      const nextIndex = currentIndex + direction;
+      if (nextIndex < 0 || nextIndex >= currentOrder.length) return currentDrafts;
+
+      const [movedTeamId] = currentOrder.splice(currentIndex, 1);
+      currentOrder.splice(nextIndex, 0, movedTeamId);
+
+      return {
+        ...currentDrafts,
+        [eventKey]: currentOrder,
+      };
+    });
+  }
+
+  async function handleSaveSelectedEventRanking() {
+    if (!selectedEvent || !onSaveEventRanking) return;
+
+    setEventRankingBusy(true);
+    const result = await onSaveEventRanking({
+      awardedAt: selectedEvent.awardedAt || null,
+      eventId: selectedEvent.eventId,
+      quizCode: selectedEvent.quizCode || "",
+      rows: selectedEventRankingRows,
+    });
+    setEventRankingBusy(false);
+    if (result?.ok) {
+      setDraftEventOrders((currentDrafts) => {
+        const nextDrafts = { ...currentDrafts };
+        delete nextDrafts[selectedEvent.eventId];
+        return nextDrafts;
+      });
+    }
+    setVoucherMessage(result?.message || "");
+  }
 
   async function handleCreateVoucher() {
     const targetTeam = selectedEventSessions.find(
@@ -7739,7 +8051,9 @@ function VoucherDirectory({
       <h2>Alle Gutscheine</h2>
       <p style={{ marginTop: 0, color: "#94a3b8" }}>
         Alle Podiums-Gutscheine im Ueberblick, sortiert nach Event oder Team. Nur der
-        Head Manager kann Gutscheine anlegen, loeschen oder den Status aendern.
+        Head Manager kann Gutscheine anlegen, loeschen oder den Status aendern. Das
+        Tagesranking eines ausgewaehlten Events kann aber jeder Admin hier direkt
+        korrigieren und speichern.
       </p>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
@@ -7862,6 +8176,49 @@ function VoucherDirectory({
               >
                 Gespielt am {formatCompletionDate(selectedEvent.awardedAt)}
               </p>
+
+              {canEditEventRankings && (
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    marginTop: 16,
+                    marginBottom: 18,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={handleSaveSelectedEventRanking}
+                    disabled={eventRankingBusy || !selectedEventSessions.length || !hasUnsavedEventRankingOrder}
+                    style={{
+                      padding: "10px 14px",
+                      borderRadius: 12,
+                      border: "1px solid #0f766e",
+                      background:
+                        eventRankingBusy || !selectedEventSessions.length || !hasUnsavedEventRankingOrder
+                          ? "#0f172a"
+                          : "#134e4a",
+                      color:
+                        eventRankingBusy || !selectedEventSessions.length || !hasUnsavedEventRankingOrder
+                          ? "#64748b"
+                          : "#ccfbf1",
+                      fontWeight: 700,
+                      cursor:
+                        eventRankingBusy || !selectedEventSessions.length || !hasUnsavedEventRankingOrder
+                          ? "not-allowed"
+                          : "pointer",
+                    }}
+                  >
+                    Tagesranking speichern
+                  </button>
+                  <span style={{ color: "#94a3b8", fontSize: 13 }}>
+                    Jeder Admin kann hier das gespeicherte Tagesranking fuer dieses
+                    Pubquiz direkt korrigieren.
+                  </span>
+                </div>
+              )}
 
               <div
                 style={{
@@ -7998,7 +8355,14 @@ function VoucherDirectory({
                       key={team.teamId || team.id}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: isNarrow ? "1fr" : "1fr auto auto",
+                        gridTemplateColumns:
+                          canEditEventRankings
+                            ? isNarrow
+                              ? "1fr"
+                              : "1fr auto auto auto"
+                            : isNarrow
+                              ? "1fr"
+                              : "1fr auto auto",
                         gap: 10,
                         padding: 10,
                         border: "1px solid #1f2937",
@@ -8011,6 +8375,59 @@ function VoucherDirectory({
                       <span style={{ color: "#94a3b8" }}>
                         {team.rankDaily ? `Platz ${team.rankDaily}` : "ohne Platz"}
                       </span>
+                      {canEditEventRankings && (
+                        <div
+                          style={{
+                            display: "grid",
+                            gap: 6,
+                            justifyItems: "end",
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => moveSelectedEventTeam(team.teamId || team.id, -1)}
+                            disabled={
+                              eventRankingBusy ||
+                              (selectedEventSessions[0]?.teamId || selectedEventSessions[0]?.id) ===
+                                (team.teamId || team.id)
+                            }
+                            style={{
+                              minWidth: 44,
+                              padding: "8px 10px",
+                              borderRadius: 10,
+                              border: "1px solid #334155",
+                              background: "#1e293b",
+                              color: "#e2e8f0",
+                              fontWeight: 700,
+                              cursor: "pointer",
+                            }}
+                          >
+                            Hoch
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => moveSelectedEventTeam(team.teamId || team.id, 1)}
+                            disabled={
+                              eventRankingBusy ||
+                              (selectedEventSessions[selectedEventSessions.length - 1]?.teamId ||
+                                selectedEventSessions[selectedEventSessions.length - 1]?.id) ===
+                                (team.teamId || team.id)
+                            }
+                            style={{
+                              minWidth: 44,
+                              padding: "8px 10px",
+                              borderRadius: 10,
+                              border: "1px solid #334155",
+                              background: "#1e293b",
+                              color: "#e2e8f0",
+                              fontWeight: 700,
+                              cursor: "pointer",
+                            }}
+                          >
+                            Runter
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
