@@ -899,6 +899,26 @@ function mergeVoucherDocs(primaryDocs = [], fallbackDocs = []) {
   return [...mergedById.values()];
 }
 
+async function mirrorLegacyVouchersToEventStore(legacyVouchers = []) {
+  const vouchersToMirror = legacyVouchers.filter((voucher) => {
+    const eventId = voucher.eventId || getEventId(voucher.quizCode || "");
+    return Boolean(eventId && voucher.id);
+  });
+
+  if (vouchersToMirror.length === 0) return;
+
+  await Promise.all(
+    vouchersToMirror.map((voucher) => {
+      const eventId = voucher.eventId || getEventId(voucher.quizCode || "");
+      const { storageSource, ...voucherData } = voucher;
+
+      return setDoc(getEventVoucherRef(eventId, voucher.id), voucherData, {
+        merge: true,
+      });
+    }),
+  );
+}
+
 function normalizeStoredVoucher(voucher, pubQuizzes = []) {
   return {
     id: voucher.id,
@@ -2102,6 +2122,7 @@ function App() {
           const normalizedVoucher = {
             id: voucherDoc.id,
             ...voucherDoc.data(),
+            storageSource: rootCollectionId === "quizEvents" ? "event" : "team",
           };
 
           if (rootCollectionId === "quizEvents") {
@@ -2115,6 +2136,15 @@ function App() {
         });
 
         setAllVoucherDocs(mergeVoucherDocs(primaryDocs, fallbackDocs));
+
+        const mirroredEventIds = new Set(primaryDocs.map((voucher) => voucher.id));
+        const missingEventVouchers = fallbackDocs.filter(
+          (voucher) => !mirroredEventIds.has(voucher.id),
+        );
+
+        mirrorLegacyVouchersToEventStore(missingEventVouchers).catch((error) => {
+          console.error("LEGACY VOUCHER MIRROR ERROR:", error);
+        });
       });
     }
 
