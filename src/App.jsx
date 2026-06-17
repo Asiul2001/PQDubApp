@@ -919,6 +919,90 @@ async function mirrorLegacyVouchersToEventStore(legacyVouchers = []) {
   );
 }
 
+async function loadVoucherDocsForEvent({
+  eventId,
+  teamIds = [],
+}) {
+  if (!eventId) return [];
+
+  const [eventSnapshot, ...teamSnapshots] = await Promise.all([
+    getDocs(collection(db, "quizEvents", eventId, "vouchers")),
+    ...teamIds
+      .filter(Boolean)
+      .map((teamId) => getDocs(collection(db, "teams", teamId, "vouchers"))),
+  ]);
+
+  const eventDocs = eventSnapshot.docs.map((voucherDoc) => ({
+    id: voucherDoc.id,
+    ...voucherDoc.data(),
+    storageSource: "event",
+  }));
+  const teamDocs = teamSnapshots.flatMap((snapshot) =>
+    snapshot.docs
+      .map((voucherDoc) => ({
+        id: voucherDoc.id,
+        ...voucherDoc.data(),
+        storageSource: "team",
+      }))
+      .filter((voucher) => voucher.eventId === eventId),
+  );
+
+  return mergeVoucherDocs(eventDocs, teamDocs);
+}
+
+async function loadVoucherDocsForTeam(teamId) {
+  if (!teamId) return [];
+
+  const teamSnapshot = await getDocs(collection(db, "teams", teamId, "vouchers"));
+  const teamDocs = teamSnapshot.docs.map((voucherDoc) => ({
+    id: voucherDoc.id,
+    ...voucherDoc.data(),
+    storageSource: "team",
+  }));
+
+  return mergeVoucherDocs([], teamDocs);
+}
+
+async function loadAllVoucherDocsFromFirestore(allSessions = [], teamProfiles = []) {
+  const eventIds = Array.from(
+    new Set(allSessions.map((session) => session.eventId).filter(Boolean)),
+  );
+  const teamIds = Array.from(
+    new Set(
+      [
+        ...allSessions.map((session) => session.teamId || session.id),
+        ...teamProfiles.map((profile) => profile.id),
+      ].filter(Boolean),
+    ),
+  );
+
+  const [eventSnapshots, teamSnapshots] = await Promise.all([
+    Promise.all(
+      eventIds.map((eventId) => getDocs(collection(db, "quizEvents", eventId, "vouchers"))),
+    ),
+    Promise.all(
+      teamIds.map((teamId) => getDocs(collection(db, "teams", teamId, "vouchers"))),
+    ),
+  ]);
+
+  const eventDocs = eventSnapshots.flatMap((snapshot) =>
+    snapshot.docs.map((voucherDoc) => ({
+      id: voucherDoc.id,
+      ...voucherDoc.data(),
+      storageSource: "event",
+    })),
+  );
+  const teamDocs = teamSnapshots.flatMap((snapshot) =>
+    snapshot.docs.map((voucherDoc) => ({
+      id: voucherDoc.id,
+      ...voucherDoc.data(),
+      storageSource: "team",
+    })),
+  );
+
+  return mergeVoucherDocs(eventDocs, teamDocs);
+}
+
 function normalizeScopedVoucherDocs(voucherDocs = []) {
   const primaryDocs = [];
   const fallbackDocs = [];
@@ -2136,23 +2220,66 @@ function App() {
 
   useEffect(() => {
     if (activeManager) {
-      const allVouchersRef = collectionGroup(db, "vouchers");
+      let cancelled = false;
+      const eventIds = Array.from(
+        new Set(allTeamSessions.map((session) => session.eventId).filter(Boolean)),
+      );
+      const teamIds = Array.from(
+        new Set(
+          [
+            ...allTeamSessions.map((session) => session.teamId || session.id),
+            ...teamProfiles.map((profile) => profile.id),
+          ].filter(Boolean),
+        ),
+      );
 
-      return onSnapshot(allVouchersRef, (snapshot) => {
-        const normalizedDocs = normalizeScopedVoucherDocs(snapshot.docs);
-        setAllVoucherDocs(normalizedDocs);
+      async function refreshAllVoucherDocs() {
+        try {
+          const normalizedDocs = await loadAllVoucherDocsFromFirestore(
+            allTeamSessions,
+            teamProfiles,
+          );
 
-        const eventDocs = normalizedDocs.filter((voucher) => voucher.storageSource === "event");
-        const teamDocs = normalizedDocs.filter((voucher) => voucher.storageSource === "team");
-        const mirroredEventIds = new Set(eventDocs.map((voucher) => voucher.id));
-        const missingEventVouchers = teamDocs.filter(
-          (voucher) => !mirroredEventIds.has(voucher.id),
-        );
+          if (cancelled) return;
 
-        mirrorLegacyVouchersToEventStore(missingEventVouchers).catch((error) => {
-          console.error("LEGACY VOUCHER MIRROR ERROR:", error);
-        });
-      });
+          setAllVoucherDocs(normalizedDocs);
+
+          const eventDocs = normalizedDocs.filter(
+            (voucher) => voucher.storageSource === "event",
+          );
+          const teamDocs = normalizedDocs.filter((voucher) => voucher.storageSource === "team");
+          const mirroredEventIds = new Set(eventDocs.map((voucher) => voucher.id));
+          const missingEventVouchers = teamDocs.filter(
+            (voucher) => !mirroredEventIds.has(voucher.id),
+          );
+
+          mirrorLegacyVouchersToEventStore(missingEventVouchers).catch((error) => {
+            console.error("LEGACY VOUCHER MIRROR ERROR:", error);
+          });
+        } catch (error) {
+          console.error("ALL VOUCHERS LOAD ERROR:", error);
+        }
+      }
+
+      refreshAllVoucherDocs();
+
+      const unsubscribeFns = [
+        ...eventIds.map((eventId) =>
+          onSnapshot(collection(db, "quizEvents", eventId, "vouchers"), () => {
+            refreshAllVoucherDocs();
+          }),
+        ),
+        ...teamIds.map((teamId) =>
+          onSnapshot(collection(db, "teams", teamId, "vouchers"), () => {
+            refreshAllVoucherDocs();
+          }),
+        ),
+      ];
+
+      return () => {
+        cancelled = true;
+        unsubscribeFns.forEach((unsubscribe) => unsubscribe());
+      };
     }
 
     if (!sessionData?.lobbyCode) return undefined;
@@ -2195,7 +2322,15 @@ function App() {
       cancelled = true;
       unsubscribe();
     };
-  }, [activeManager, sessionData?.lobbyCode, sessionData?.teamId, sessionData?.teamNameNormalized, sessionId]);
+  }, [
+    activeManager,
+    allTeamSessions,
+    sessionData?.lobbyCode,
+    sessionData?.teamId,
+    sessionData?.teamNameNormalized,
+    sessionId,
+    teamProfiles,
+  ]);
 
   useEffect(() => {
     if (!sessionData?.lobbyCode) return undefined;
@@ -7233,14 +7368,29 @@ function VoucherScreen({
       return undefined;
     }
 
-    const vouchersQuery = query(
-      collectionGroup(db, "vouchers"),
-      where("teamId", "==", teamId),
-    );
+    let cancelled = false;
 
-    return onSnapshot(vouchersQuery, (snapshot) => {
-      setScopedVoucherDocs(normalizeScopedVoucherDocs(snapshot.docs));
+    async function refreshTeamVouchers() {
+      try {
+        const voucherDocs = await loadVoucherDocsForTeam(teamId);
+        if (!cancelled) {
+          setScopedVoucherDocs(voucherDocs);
+        }
+      } catch (error) {
+        console.error("TEAM VOUCHERS LOAD ERROR:", error);
+      }
+    }
+
+    refreshTeamVouchers();
+
+    const unsubscribe = onSnapshot(collection(db, "teams", teamId, "vouchers"), () => {
+      refreshTeamVouchers();
     });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [teamId]);
 
   return (
@@ -7934,6 +8084,10 @@ function VoucherDirectory({
       podiumBonusPoints: row.podiumBonusPoints || 0,
     };
   });
+  const selectedEventTeamIds = Array.from(
+    new Set(selectedEventSessions.map((session) => session.teamId || session.id).filter(Boolean)),
+  );
+  const selectedEventTeamKey = selectedEventTeamIds.join("|");
   const persistedSelectedEventOrder =
     selectedEventBaseRows.map((row) => row.teamId).join("|");
   const draftSelectedEventOrder =
@@ -8000,29 +8154,53 @@ function VoucherDirectory({
       return undefined;
     }
 
-    const vouchersQuery = query(
-      collectionGroup(db, "vouchers"),
-      where("eventId", "==", selectedEvent.eventId),
-    );
+    let cancelled = false;
+    async function refreshSelectedEventVouchers() {
+      try {
+        const normalizedDocs = await loadVoucherDocsForEvent({
+          eventId: selectedEvent.eventId,
+          teamIds: selectedEventTeamIds,
+        });
 
-    return onSnapshot(vouchersQuery, (snapshot) => {
-      const normalizedDocs = normalizeScopedVoucherDocs(snapshot.docs);
-      setSelectedEventVoucherDocs(normalizedDocs);
+        if (cancelled) return;
 
-      const mirroredEventIds = new Set(
-        normalizedDocs
-          .filter((voucher) => voucher.storageSource === "event")
-          .map((voucher) => voucher.id),
-      );
-      const missingEventVouchers = normalizedDocs.filter(
-        (voucher) => voucher.storageSource === "team" && !mirroredEventIds.has(voucher.id),
-      );
+        setSelectedEventVoucherDocs(normalizedDocs);
 
-      mirrorLegacyVouchersToEventStore(missingEventVouchers).catch((error) => {
-        console.error("SELECTED EVENT VOUCHER MIRROR ERROR:", error);
-      });
-    });
-  }, [selectedEvent?.eventId]);
+        const mirroredEventIds = new Set(
+          normalizedDocs
+            .filter((voucher) => voucher.storageSource === "event")
+            .map((voucher) => voucher.id),
+        );
+        const missingEventVouchers = normalizedDocs.filter(
+          (voucher) => voucher.storageSource === "team" && !mirroredEventIds.has(voucher.id),
+        );
+
+        mirrorLegacyVouchersToEventStore(missingEventVouchers).catch((error) => {
+          console.error("SELECTED EVENT VOUCHER MIRROR ERROR:", error);
+        });
+      } catch (error) {
+        console.error("SELECTED EVENT VOUCHERS LOAD ERROR:", error);
+      }
+    }
+
+    refreshSelectedEventVouchers();
+
+    const unsubscribeFns = [
+      onSnapshot(collection(db, "quizEvents", selectedEvent.eventId, "vouchers"), () => {
+        refreshSelectedEventVouchers();
+      }),
+      ...selectedEventTeamIds.map((teamId) =>
+        onSnapshot(collection(db, "teams", teamId, "vouchers"), () => {
+          refreshSelectedEventVouchers();
+        }),
+      ),
+    ];
+
+    return () => {
+      cancelled = true;
+      unsubscribeFns.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [selectedEvent?.eventId, selectedEventTeamKey]);
 
   useEffect(() => {
     if (!selectedTeam?.id) {
@@ -8030,14 +8208,32 @@ function VoucherDirectory({
       return undefined;
     }
 
-    const vouchersQuery = query(
-      collectionGroup(db, "vouchers"),
-      where("teamId", "==", selectedTeam.id),
+    let cancelled = false;
+
+    async function refreshSelectedTeamVouchers() {
+      try {
+        const voucherDocs = await loadVoucherDocsForTeam(selectedTeam.id);
+        if (!cancelled) {
+          setSelectedTeamVoucherDocs(voucherDocs);
+        }
+      } catch (error) {
+        console.error("SELECTED TEAM VOUCHERS LOAD ERROR:", error);
+      }
+    }
+
+    refreshSelectedTeamVouchers();
+
+    const unsubscribe = onSnapshot(
+      collection(db, "teams", selectedTeam.id, "vouchers"),
+      () => {
+        refreshSelectedTeamVouchers();
+      },
     );
 
-    return onSnapshot(vouchersQuery, (snapshot) => {
-      setSelectedTeamVoucherDocs(normalizeScopedVoucherDocs(snapshot.docs));
-    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [selectedTeam?.id]);
 
   function moveSelectedEventTeam(teamId, direction) {
