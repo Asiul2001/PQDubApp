@@ -919,6 +919,31 @@ async function mirrorLegacyVouchersToEventStore(legacyVouchers = []) {
   );
 }
 
+function normalizeScopedVoucherDocs(voucherDocs = []) {
+  const primaryDocs = [];
+  const fallbackDocs = [];
+
+  voucherDocs.forEach((voucherDoc) => {
+    const rootCollectionId = voucherDoc.ref.parent.parent?.parent?.id;
+    const normalizedVoucher = {
+      id: voucherDoc.id,
+      ...voucherDoc.data(),
+      storageSource: rootCollectionId === "quizEvents" ? "event" : "team",
+    };
+
+    if (rootCollectionId === "quizEvents") {
+      primaryDocs.push(normalizedVoucher);
+      return;
+    }
+
+    if (rootCollectionId === "teams") {
+      fallbackDocs.push(normalizedVoucher);
+    }
+  });
+
+  return mergeVoucherDocs(primaryDocs, fallbackDocs);
+}
+
 function normalizeStoredVoucher(voucher, pubQuizzes = []) {
   return {
     id: voucher.id,
@@ -2114,31 +2139,13 @@ function App() {
       const allVouchersRef = collectionGroup(db, "vouchers");
 
       return onSnapshot(allVouchersRef, (snapshot) => {
-        const primaryDocs = [];
-        const fallbackDocs = [];
+        const normalizedDocs = normalizeScopedVoucherDocs(snapshot.docs);
+        setAllVoucherDocs(normalizedDocs);
 
-        snapshot.docs.forEach((voucherDoc) => {
-          const rootCollectionId = voucherDoc.ref.parent.parent?.parent?.id;
-          const normalizedVoucher = {
-            id: voucherDoc.id,
-            ...voucherDoc.data(),
-            storageSource: rootCollectionId === "quizEvents" ? "event" : "team",
-          };
-
-          if (rootCollectionId === "quizEvents") {
-            primaryDocs.push(normalizedVoucher);
-            return;
-          }
-
-          if (rootCollectionId === "teams") {
-            fallbackDocs.push(normalizedVoucher);
-          }
-        });
-
-        setAllVoucherDocs(mergeVoucherDocs(primaryDocs, fallbackDocs));
-
-        const mirroredEventIds = new Set(primaryDocs.map((voucher) => voucher.id));
-        const missingEventVouchers = fallbackDocs.filter(
+        const eventDocs = normalizedDocs.filter((voucher) => voucher.storageSource === "event");
+        const teamDocs = normalizedDocs.filter((voucher) => voucher.storageSource === "team");
+        const mirroredEventIds = new Set(eventDocs.map((voucher) => voucher.id));
+        const missingEventVouchers = teamDocs.filter(
           (voucher) => !mirroredEventIds.has(voucher.id),
         );
 
@@ -2167,16 +2174,12 @@ function App() {
 
         if (cancelled) return;
 
-        const primaryDocs = eventSnapshot.docs.map((voucherDoc) => ({
-          id: voucherDoc.id,
-          ...voucherDoc.data(),
-        }));
-        const fallbackDocs = legacySnapshot.docs.map((voucherDoc) => ({
-          id: voucherDoc.id,
-          ...voucherDoc.data(),
-        }));
+        const normalizedDocs = normalizeScopedVoucherDocs([
+          ...eventSnapshot.docs,
+          ...legacySnapshot.docs,
+        ]);
 
-        setAllVoucherDocs(mergeVoucherDocs(primaryDocs, fallbackDocs));
+        setAllVoucherDocs(normalizedDocs);
       } catch (error) {
         console.error("TEAM EVENT VOUCHERS LOAD ERROR:", error);
       }
@@ -7205,12 +7208,14 @@ function VoucherScreen({
   onUpdateVoucherStatus,
 }) {
   const [voucherMessage, setVoucherMessage] = useState("");
+  const [scopedVoucherDocs, setScopedVoucherDocs] = useState([]);
   const isNarrow = useIsNarrowScreen();
   const teamId =
     sessionData?.teamId || teamSessionId || sessionData?.teamNameNormalized || "";
   const teamProfile = teamProfiles.find((profile) => profile.id === teamId);
   const teamName = sessionData?.teamName || teamProfile?.teamName || teamProfile?.name || "";
-  const vouchers = buildVoucherEntries(teamHistorySessions, allVoucherDocs, pubQuizzes, {
+  const effectiveVoucherDocs = scopedVoucherDocs.length > 0 ? scopedVoucherDocs : allVoucherDocs;
+  const vouchers = buildVoucherEntries(teamHistorySessions, effectiveVoucherDocs, pubQuizzes, {
     visibleTeamId: teamId || null,
   });
   const wonVoucherCount = vouchers.length;
@@ -7221,6 +7226,22 @@ function VoucherScreen({
     globalRankingRows.find((row) => row.teamId === teamId)?.totalGlobalPoints ||
     teamProfile?.totalGlobalPoints ||
     0;
+
+  useEffect(() => {
+    if (!teamId) {
+      setScopedVoucherDocs([]);
+      return undefined;
+    }
+
+    const vouchersQuery = query(
+      collectionGroup(db, "vouchers"),
+      where("teamId", "==", teamId),
+    );
+
+    return onSnapshot(vouchersQuery, (snapshot) => {
+      setScopedVoucherDocs(normalizeScopedVoucherDocs(snapshot.docs));
+    });
+  }, [teamId]);
 
   return (
     <main style={pageStyle}>
@@ -7782,6 +7803,8 @@ function VoucherDirectory({
   const [viewMode, setViewMode] = useState("event");
   const [draftEventOrders, setDraftEventOrders] = useState({});
   const [eventRankingBusy, setEventRankingBusy] = useState(false);
+  const [selectedEventVoucherDocs, setSelectedEventVoucherDocs] = useState([]);
+  const [selectedTeamVoucherDocs, setSelectedTeamVoucherDocs] = useState([]);
   const [selectedEventId, setSelectedEventId] = useState(null);
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedCreateRank, setSelectedCreateRank] = useState("1");
@@ -7917,7 +7940,9 @@ function VoucherDirectory({
     selectedEventRankingRows.map((row) => row.teamId).join("|");
   const hasUnsavedEventRankingOrder =
     draftSelectedEventOrder !== persistedSelectedEventOrder;
-  const selectedEventVouchers = allEffectiveVouchers
+  const selectedEventEffectiveVouchers =
+    selectedEventVoucherDocs.length > 0 ? selectedEventVoucherDocs : allEffectiveVouchers;
+  const selectedEventVouchers = selectedEventEffectiveVouchers
     .filter((voucher) => voucher.eventId === selectedEvent?.eventId)
     .sort(
       (a, b) =>
@@ -7940,10 +7965,12 @@ function VoucherDirectory({
     visibleVoucherTeams.find((team) => team.id === selectedTeamId) ||
     visibleVoucherTeams[0] ||
     null;
+  const selectedTeamEffectiveVouchers =
+    selectedTeamVoucherDocs.length > 0 ? selectedTeamVoucherDocs : allVoucherDocs;
   const selectedTeamVouchers = selectedTeam
     ? buildVoucherEntries(
         selectedTeam.sessions || [],
-        allVoucherDocs,
+        selectedTeamEffectiveVouchers,
         pubQuizzes,
         { visibleTeamId: selectedTeam.id },
       )
@@ -7966,6 +7993,52 @@ function VoucherDirectory({
       setSelectedCreateTeamId(selectedEventSessions[0]?.teamId || selectedEventSessions[0]?.id || "");
     }
   }, [selectedCreateTeamId, selectedEventSessions]);
+
+  useEffect(() => {
+    if (!selectedEvent?.eventId) {
+      setSelectedEventVoucherDocs([]);
+      return undefined;
+    }
+
+    const vouchersQuery = query(
+      collectionGroup(db, "vouchers"),
+      where("eventId", "==", selectedEvent.eventId),
+    );
+
+    return onSnapshot(vouchersQuery, (snapshot) => {
+      const normalizedDocs = normalizeScopedVoucherDocs(snapshot.docs);
+      setSelectedEventVoucherDocs(normalizedDocs);
+
+      const mirroredEventIds = new Set(
+        normalizedDocs
+          .filter((voucher) => voucher.storageSource === "event")
+          .map((voucher) => voucher.id),
+      );
+      const missingEventVouchers = normalizedDocs.filter(
+        (voucher) => voucher.storageSource === "team" && !mirroredEventIds.has(voucher.id),
+      );
+
+      mirrorLegacyVouchersToEventStore(missingEventVouchers).catch((error) => {
+        console.error("SELECTED EVENT VOUCHER MIRROR ERROR:", error);
+      });
+    });
+  }, [selectedEvent?.eventId]);
+
+  useEffect(() => {
+    if (!selectedTeam?.id) {
+      setSelectedTeamVoucherDocs([]);
+      return undefined;
+    }
+
+    const vouchersQuery = query(
+      collectionGroup(db, "vouchers"),
+      where("teamId", "==", selectedTeam.id),
+    );
+
+    return onSnapshot(vouchersQuery, (snapshot) => {
+      setSelectedTeamVoucherDocs(normalizeScopedVoucherDocs(snapshot.docs));
+    });
+  }, [selectedTeam?.id]);
 
   function moveSelectedEventTeam(teamId, direction) {
     if (!selectedEvent?.eventId) return;
