@@ -8092,9 +8092,11 @@ function VoucherDirectory({
   const hasUnsavedEventRankingOrder =
     draftSelectedEventOrder !== persistedSelectedEventOrder;
   const selectedEventEffectiveVouchers =
-    selectedEventVoucherDocs.length > 0 ? selectedEventVoucherDocs : allEffectiveVouchers;
+    selectedEventVoucherDocs.length > 0
+      ? buildAllVoucherEntries(selectedEventSessions, selectedEventVoucherDocs, pubQuizzes)
+      : allEffectiveVouchers;
   const selectedEventVouchers = selectedEventEffectiveVouchers
-    .filter((voucher) => voucher.eventId === selectedEvent?.eventId)
+    .filter((voucher) => !voucher.deleted && voucher.eventId === selectedEvent?.eventId)
     .sort(
       (a, b) =>
         getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt) ||
@@ -8655,9 +8657,7 @@ function VoucherDirectory({
                           </strong>
                           {voucher.isManualAssignment
                             ? " - manuell gesetzt"
-                            : voucher.isStored
-                              ? " - gespeichert"
-                              : " - aus Ranking"}
+                            : " - gespeichert"}
                         </span>
                         {renderVoucherActions(voucher, sourceSession)}
                       </article>
