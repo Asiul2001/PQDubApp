@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { db } from "./firebase";
 import {
   arrayUnion,
@@ -253,7 +253,9 @@ function isNewTeamJoinClosed(lobbyData, now = Date.now()) {
 }
 
 function isRoundUnlocked(lobbyData, roundId) {
-  return Boolean(lobbyData?.unlockedRounds?.[roundId]);
+  return Boolean(
+    lobbyData?.unlockedRounds?.[roundId] || lobbyData?.roundStarts?.[roundId],
+  );
 }
 
 function isRoundAnswersRevealed(lobbyData, roundId) {
@@ -1864,6 +1866,7 @@ function App() {
   const [pubQuizzes, setPubQuizzes] = useState([]);
   const [quizManagerMessage, setQuizManagerMessage] = useState("");
   const [issuedTeamPassword, setIssuedTeamPassword] = useState(null);
+  const syncedAnswerDraftsRef = useRef({});
 
   useEffect(() => {
     const managersRef = collection(db, "managers");
@@ -1884,6 +1887,16 @@ function App() {
   }, [activeRoundId, quizRounds]);
 
   useEffect(() => {
+    const lobbyRoundId = lobbyData?.activeRoundId;
+
+    if (!lobbyRoundId) return;
+    if (lobbyRoundId === activeRoundId) return;
+    if (!quizRounds.some((round) => round.id === lobbyRoundId)) return;
+
+    setActiveRoundId(lobbyRoundId);
+  }, [activeRoundId, lobbyData?.activeRoundId, quizRounds]);
+
+  useEffect(() => {
     if (!sessionId || !sessionData?.lobbyCode) return undefined;
 
     const sessionRef = getTeamSessionRef(sessionData.lobbyCode, sessionId);
@@ -1895,10 +1908,26 @@ function App() {
       setSessionData(data);
       setAnswerDrafts((currentDrafts) => {
         const nextDrafts = { ...currentDrafts };
+        const previousSyncedDrafts = syncedAnswerDraftsRef.current || {};
 
         Object.entries(data?.answers || {}).forEach(([questionId, savedAnswer]) => {
-          nextDrafts[questionId] = savedAnswer?.text ?? "";
+          const serverText = savedAnswer?.text ?? "";
+          const currentDraft = currentDrafts[questionId];
+          const previousSyncedDraft = previousSyncedDrafts[questionId];
+          const shouldHydrateDraft =
+            currentDraft === undefined || currentDraft === previousSyncedDraft;
+
+          if (shouldHydrateDraft) {
+            nextDrafts[questionId] = serverText;
+          }
         });
+
+        syncedAnswerDraftsRef.current = Object.fromEntries(
+          Object.entries(data?.answers || {}).map(([questionId, savedAnswer]) => [
+            questionId,
+            savedAnswer?.text ?? "",
+          ]),
+        );
 
         return nextDrafts;
       });
