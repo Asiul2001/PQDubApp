@@ -96,6 +96,8 @@ const ANSWER_WINDOW_MS = 5 * 60 * 60 * 1000;
 const ROUND_START_WINDOW_MS = DEFAULT_ROUND_START_WINDOW_MS;
 const EMERGENCY_JOIN_WINDOW_MS = 5 * 60 * 1000;
 const HIDDEN_YEARLY_RANKING_TEAM_IDS = new Set(["asiul"]);
+const RECENT_PLAYER_SESSION_KEY = "pqRecentPlayerSession";
+const RECENT_PLAYER_SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function normalizeTeamName(name) {
   return name
@@ -436,6 +438,57 @@ function getClientId() {
   window.localStorage.setItem(storageKey, nextId);
 
   return nextId;
+}
+
+function readRecentPlayerSession() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const rawValue = window.localStorage.getItem(RECENT_PLAYER_SESSION_KEY);
+
+    if (!rawValue) return null;
+
+    const parsed = JSON.parse(rawValue);
+    const savedAt = Number(parsed?.savedAt);
+
+    if (
+      !parsed ||
+      !parsed.sessionId ||
+      !parsed.lobbyCode ||
+      !Number.isFinite(savedAt) ||
+      Date.now() - savedAt > RECENT_PLAYER_SESSION_MAX_AGE_MS
+    ) {
+      window.localStorage.removeItem(RECENT_PLAYER_SESSION_KEY);
+      return null;
+    }
+
+    return parsed;
+  } catch (error) {
+    console.warn("RECENT PLAYER SESSION READ ERROR:", error);
+    window.localStorage.removeItem(RECENT_PLAYER_SESSION_KEY);
+    return null;
+  }
+}
+
+function saveRecentPlayerSession(session) {
+  if (typeof window === "undefined" || !session?.sessionId || !session?.lobbyCode) return;
+
+  window.localStorage.setItem(
+    RECENT_PLAYER_SESSION_KEY,
+    JSON.stringify({
+      lobbyCode: normalizeQuizCode(session.lobbyCode),
+      playerName: session.playerName || "",
+      rankingOptIn: Boolean(session.rankingOptIn),
+      savedAt: Date.now(),
+      sessionId: session.sessionId,
+      teamName: session.teamName || "",
+    }),
+  );
+}
+
+function clearRecentPlayerSession() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(RECENT_PLAYER_SESSION_KEY);
 }
 
 function formatStopwatch(ms) {
@@ -1924,6 +1977,72 @@ function App() {
   const syncedAnswerDraftsRef = useRef({});
   const hasHydratedLobbyRoundRef = useRef(false);
   const lastLobbyActiveRoundRef = useRef(null);
+
+  useEffect(() => {
+    if (sessionId && sessionData?.lobbyCode && !sessionData?.managerOnly) {
+      saveRecentPlayerSession({
+        lobbyCode: sessionData.lobbyCode,
+        playerName: sessionData.playerName,
+        rankingOptIn: sessionData.rankingOptIn,
+        sessionId,
+        teamName: sessionData.teamName,
+      });
+    }
+  }, [
+    sessionData?.lobbyCode,
+    sessionData?.managerOnly,
+    sessionData?.playerName,
+    sessionData?.rankingOptIn,
+    sessionData?.teamName,
+    sessionId,
+  ]);
+
+  useEffect(() => {
+    if (activeManager || sessionId || sessionData?.managerOnly) return undefined;
+
+    const recentSession = readRecentPlayerSession();
+
+    if (!recentSession) return undefined;
+
+    let cancelled = false;
+
+    async function restoreRecentSession() {
+      try {
+        const sessionRef = getTeamSessionRef(recentSession.lobbyCode, recentSession.sessionId);
+        const sessionSnapshot = await getDoc(sessionRef);
+
+        if (!sessionSnapshot.exists()) {
+          clearRecentPlayerSession();
+          return;
+        }
+
+        const restoredSession = sessionSnapshot.data();
+
+        if (cancelled || restoredSession?.managerOnly) return;
+
+        setLobbyCode(recentSession.lobbyCode);
+        setTeamName(restoredSession.teamName || recentSession.teamName || "");
+        setPlayerName(restoredSession.playerName || recentSession.playerName || "");
+        setSessionId(recentSession.sessionId);
+        setSessionData({
+          id: recentSession.sessionId,
+          ...restoredSession,
+          lobbyCode: recentSession.lobbyCode,
+        });
+        setEntryMode("known");
+        setAppView("main");
+      } catch (error) {
+        console.error("RECENT PLAYER SESSION RESTORE ERROR:", error);
+        clearRecentPlayerSession();
+      }
+    }
+
+    restoreRecentSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeManager, sessionData?.managerOnly, sessionId]);
 
   useEffect(() => {
     const managersRef = collection(db, "managers");
@@ -3956,12 +4075,15 @@ function App() {
   }
 
   async function updateTeamScore({
+    lobbyCode,
     nextTotalPoints,
     note,
     teamId,
     teamName,
   }) {
-    if (!canManagerEditScores(activeManager) || !sessionData?.lobbyCode || !teamId) {
+    const targetLobbyCode = normalizeQuizCode(lobbyCode || sessionData?.lobbyCode || "");
+
+    if (!canManagerEditScores(activeManager) || !targetLobbyCode || !teamId) {
       return { ok: false, message: "Dieser Manager darf keine Punkte korrigieren." };
     }
 
@@ -3971,7 +4093,7 @@ function App() {
       return { ok: false, message: "Bitte eine gueltige Punktzahl eingeben." };
     }
 
-    const sessionRef = getTeamSessionRef(sessionData.lobbyCode, teamId);
+    const sessionRef = getTeamSessionRef(targetLobbyCode, teamId);
 
     try {
       const sessionSnapshot = await getDoc(sessionRef);
@@ -4001,6 +4123,7 @@ function App() {
       );
 
       const auditSummary = await auditTeamSessionScores({
+        lobbyCode: targetLobbyCode,
         teamId,
         reason: "Gesamtpunktestand",
       });
@@ -4022,6 +4145,7 @@ function App() {
   }
 
   async function updateTeamQuestionScore({
+    lobbyCode,
     nextPointsAwarded,
     note,
     questionId,
@@ -4029,7 +4153,9 @@ function App() {
     teamId,
     teamName,
   }) {
-    if (!canManagerEditScores(activeManager) || !sessionData?.lobbyCode || !teamId || !questionId) {
+    const targetLobbyCode = normalizeQuizCode(lobbyCode || sessionData?.lobbyCode || "");
+
+    if (!canManagerEditScores(activeManager) || !targetLobbyCode || !teamId || !questionId) {
       return { ok: false, message: "Dieser Manager darf keine Fragen korrigieren." };
     }
 
@@ -4039,7 +4165,7 @@ function App() {
       return { ok: false, message: "Bitte eine gueltige Punktzahl fuer die Frage eingeben." };
     }
 
-    const sessionRef = getTeamSessionRef(sessionData.lobbyCode, teamId);
+    const sessionRef = getTeamSessionRef(targetLobbyCode, teamId);
 
     try {
       const sessionSnapshot = await getDoc(sessionRef);
@@ -4101,6 +4227,7 @@ function App() {
       );
 
       const auditSummary = await auditTeamSessionScores({
+        lobbyCode: targetLobbyCode,
         teamId,
         reason: questionTitle || questionId,
       });
@@ -4126,16 +4253,19 @@ function App() {
 
   async function submitManagerAnswerForTeam({
     answerText,
+    lobbyCode,
     note,
     question,
     teamId,
     teamName,
   }) {
-    if (!canManagerEditScores(activeManager) || !sessionData?.lobbyCode || !teamId || !question?.id) {
+    const targetLobbyCode = normalizeQuizCode(lobbyCode || sessionData?.lobbyCode || "");
+
+    if (!canManagerEditScores(activeManager) || !targetLobbyCode || !teamId || !question?.id) {
       return { ok: false, message: "Manager-Antwort konnte nicht gespeichert werden." };
     }
 
-    const sessionRef = getTeamSessionRef(sessionData.lobbyCode, teamId);
+    const sessionRef = getTeamSessionRef(targetLobbyCode, teamId);
 
     try {
       const sessionSnapshot = await getDoc(sessionRef);
@@ -4200,6 +4330,7 @@ function App() {
       );
 
       const auditSummary = await auditTeamSessionScores({
+        lobbyCode: targetLobbyCode,
         teamId,
         reason: question.title,
       });
@@ -9347,6 +9478,7 @@ function TeamDirectory({
     if (!selectedTeam || !selectedSession || !canEditScores) return;
 
     const result = await onUpdateTeamScore({
+      lobbyCode: selectedSession.lobbyCode || selectedSession.quizCode,
       nextTotalPoints: scoreDraft,
       note: scoreNoteDraft,
       teamId: selectedSession.teamId || selectedSession.id,
@@ -9362,6 +9494,7 @@ function TeamDirectory({
     }
 
     const result = await onUpdateTeamQuestionScore({
+      lobbyCode: selectedSession.lobbyCode || selectedSession.quizCode,
       nextPointsAwarded: questionScoreDrafts[question.id] ?? "0",
       note: questionNoteDrafts[question.id] || "",
       questionId: question.id,
@@ -9383,6 +9516,7 @@ function TeamDirectory({
 
     const result = await onSubmitManagerAnswerForTeam({
       answerText: questionAnswerDrafts[question.id] ?? "",
+      lobbyCode: selectedSession.lobbyCode || selectedSession.quizCode,
       note: questionNoteDrafts[question.id] || "",
       question,
       teamId: selectedSession.teamId || selectedSession.id,
