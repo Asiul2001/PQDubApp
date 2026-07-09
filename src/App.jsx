@@ -4133,6 +4133,14 @@ function App() {
               auditSummary.totalCorrections === 1 ? "" : "en"
             }.`
           : "";
+      const refreshedSnapshot = await getDoc(sessionRef);
+
+      if (refreshedSnapshot.exists()) {
+        syncCachedTeamSession({
+          id: refreshedSnapshot.id,
+          ...refreshedSnapshot.data(),
+        });
+      }
 
       return {
         ok: true,
@@ -4142,6 +4150,41 @@ function App() {
       console.error("TEAM SCORE UPDATE ERROR:", error);
       return { ok: false, message: `Punkte konnten nicht gespeichert werden: ${error.message}` };
     }
+  }
+
+  function syncCachedTeamSession(targetSession) {
+    if (!targetSession?.id) return;
+
+    const nextSession = {
+      id: targetSession.id,
+      sessionKey: `${targetSession.eventId || "event"}__${targetSession.id}`,
+      ...targetSession,
+    };
+
+    setAllTeamSessions((currentSessions) =>
+      currentSessions.map((session) =>
+        (session.eventId || "") === (nextSession.eventId || "") &&
+        (session.id || "") === nextSession.id
+          ? {
+              ...session,
+              ...nextSession,
+              sessionKey: nextSession.sessionKey,
+            }
+          : session,
+      ),
+    );
+
+    setAllTeams((currentTeams) =>
+      currentTeams.map((session) =>
+        (session.eventId || "") === (nextSession.eventId || "") &&
+        (session.id || "") === nextSession.id
+          ? {
+              ...session,
+              ...nextSession,
+            }
+          : session,
+      ),
+    );
   }
 
   async function updateTeamQuestionScore({
@@ -4237,6 +4280,14 @@ function App() {
               auditSummary.totalCorrections === 1 ? "" : "en"
             }.`
           : "";
+      const refreshedSnapshot = await getDoc(sessionRef);
+
+      if (refreshedSnapshot.exists()) {
+        syncCachedTeamSession({
+          id: refreshedSnapshot.id,
+          ...refreshedSnapshot.data(),
+        });
+      }
 
       return {
         ok: true,
@@ -4340,6 +4391,14 @@ function App() {
               auditSummary.totalCorrections === 1 ? "" : "en"
             }.`
           : "";
+      const refreshedSnapshot = await getDoc(sessionRef);
+
+      if (refreshedSnapshot.exists()) {
+        syncCachedTeamSession({
+          id: refreshedSnapshot.id,
+          ...refreshedSnapshot.data(),
+        });
+      }
 
       return {
         ok: true,
@@ -9319,8 +9378,9 @@ function TeamDirectory({
   const [questionNoteDrafts, setQuestionNoteDrafts] = useState({});
   const [questionMessages, setQuestionMessages] = useState({});
   const isNarrow = useIsNarrowScreen();
-  const globalRankingMap = new Map(
-    globalRankingRows.map((row) => [row.teamId, row]),
+  const globalRankingMap = useMemo(
+    () => new Map(globalRankingRows.map((row) => [row.teamId, row])),
+    [globalRankingRows],
   );
   const teamVoucherMap = new Map();
 
@@ -9333,83 +9393,114 @@ function TeamDirectory({
     ]);
   });
 
-  const sortedTeams = aggregateTeamDirectory(teams, teamProfiles)
-    .filter((team) => {
-      if (team.rankingOptIn || team.rankingPassword) return true;
+  const sortedTeams = useMemo(
+    () =>
+      aggregateTeamDirectory(teams, teamProfiles)
+        .filter((team) => {
+          if (team.rankingOptIn || team.rankingPassword) return true;
 
-      const derivedVouchers = buildVoucherEntries(
-        team.sessions || [],
-        allVoucherDocs,
-        pubQuizzes,
-        { visibleTeamId: team.id },
-      );
+          const derivedVouchers = buildVoucherEntries(
+            team.sessions || [],
+            allVoucherDocs,
+            pubQuizzes,
+            { visibleTeamId: team.id },
+          );
 
-      if (derivedVouchers.length === 0) return false;
+          if (derivedVouchers.length === 0) return false;
 
-      return derivedVouchers.some((voucher) => voucher.status !== "redeemed");
-    })
-    .map((team) => {
-      const globalRow = globalRankingMap.get(team.teamNameNormalized || team.id);
+          return derivedVouchers.some((voucher) => voucher.status !== "redeemed");
+        })
+        .map((team) => {
+          const globalRow = globalRankingMap.get(team.teamNameNormalized || team.id);
 
-      if (!globalRow) return team;
+          if (!globalRow) return team;
 
-      return {
-        ...team,
-        sessions: team.sessions || [],
-        totalPoints: Number(globalRow.totalGlobalPoints) || team.totalPoints || 0,
-        totalDailyPoints: Number(globalRow.totalDailyPoints) || 0,
-        gamesPlayed: Number(globalRow.gamesPlayed) || team.sessions.length || 0,
-      };
-    });
+          return {
+            ...team,
+            sessions: team.sessions || [],
+            totalPoints: Number(globalRow.totalGlobalPoints) || team.totalPoints || 0,
+            totalDailyPoints: Number(globalRow.totalDailyPoints) || 0,
+            gamesPlayed: Number(globalRow.gamesPlayed) || team.sessions.length || 0,
+          };
+        }),
+    [allVoucherDocs, globalRankingMap, pubQuizzes, teamProfiles, teams],
+  );
   const normalizedTeamSearch = normalizeTeamName(teamSearch || "");
-  const visibleTeams = sortedTeams.filter((team) => {
-    if (!normalizedTeamSearch) return true;
+  const visibleTeams = useMemo(
+    () =>
+      sortedTeams.filter((team) => {
+        if (!normalizedTeamSearch) return true;
 
-    return (
-      normalizeTeamName(team.teamName || "").includes(normalizedTeamSearch) ||
-      (team.teamNameNormalized || "").includes(normalizedTeamSearch)
-    );
-  });
-  const selectedTeam =
-    visibleTeams.find((team) => team.id === selectedTeamId) || visibleTeams[0];
-  const selectedSessions = selectedTeam?.sessions || [];
-  const selectedTeamVouchers = buildVoucherEntries(
-    selectedSessions,
-    allVoucherDocs,
-    pubQuizzes,
-    { visibleTeamId: selectedTeam?.id || null },
+        return (
+          normalizeTeamName(team.teamName || "").includes(normalizedTeamSearch) ||
+          (team.teamNameNormalized || "").includes(normalizedTeamSearch)
+        );
+      }),
+    [normalizedTeamSearch, sortedTeams],
   );
-  const selectedSession =
-    selectedSessions.find((session) => session.sessionKey === selectedSessionId) ||
-    selectedSessions[0];
-  const selectedPubQuiz = pubQuizzes.find(
-    (pubQuiz) =>
-      pubQuiz.quizCode === selectedSession?.quizCode ||
-      pubQuiz.quizCode === selectedSession?.lobbyCode ||
-      pubQuiz.id === selectedSession?.quizId,
+  const selectedTeam = useMemo(
+    () => visibleTeams.find((team) => team.id === selectedTeamId) || visibleTeams[0],
+    [selectedTeamId, visibleTeams],
   );
-  const selectedQuiz = createRuntimeQuizFromPubQuiz(selectedPubQuiz);
-  const selectedQuizQuestionsByRound = selectedQuiz.quizRounds.map((round) => ({
-    ...round,
-    questions: round.questionIds
-      .map((questionId) => {
-        const question = selectedQuiz.questions[questionId];
+  const selectedSessions = useMemo(() => selectedTeam?.sessions || [], [selectedTeam]);
+  const selectedTeamVouchers = useMemo(
+    () =>
+      buildVoucherEntries(selectedSessions, allVoucherDocs, pubQuizzes, {
+        visibleTeamId: selectedTeam?.id || null,
+      }),
+    [allVoucherDocs, pubQuizzes, selectedSessions, selectedTeam?.id],
+  );
+  const selectedSession = useMemo(
+    () =>
+      selectedSessions.find((session) => session.sessionKey === selectedSessionId) ||
+      selectedSessions[0],
+    [selectedSessionId, selectedSessions],
+  );
+  const selectedPubQuiz = useMemo(
+    () =>
+      pubQuizzes.find(
+        (pubQuiz) =>
+          pubQuiz.quizCode === selectedSession?.quizCode ||
+          pubQuiz.quizCode === selectedSession?.lobbyCode ||
+          pubQuiz.id === selectedSession?.quizId,
+      ),
+    [pubQuizzes, selectedSession?.lobbyCode, selectedSession?.quizCode, selectedSession?.quizId],
+  );
+  const selectedQuiz = useMemo(
+    () => createRuntimeQuizFromPubQuiz(selectedPubQuiz),
+    [selectedPubQuiz],
+  );
+  const selectedQuizQuestionsByRound = useMemo(
+    () =>
+      selectedQuiz.quizRounds.map((round) => ({
+        ...round,
+        questions: round.questionIds
+          .map((questionId) => {
+            const question = selectedQuiz.questions[questionId];
 
-        if (!question) return null;
+            if (!question) return null;
 
-        return {
-          ...question,
-          roundId: round.id,
-          roundTitle: round.title,
-        };
-      })
-      .filter(Boolean),
-  }));
-  const selectedQuestionRound =
-    selectedQuizQuestionsByRound.find((round) => round.id === selectedAnswerRoundId) ||
-    selectedQuizQuestionsByRound[0] ||
-    null;
-  const selectedQuizQuestions = selectedQuestionRound?.questions || [];
+            return {
+              ...question,
+              roundId: round.id,
+              roundTitle: round.title,
+            };
+          })
+          .filter(Boolean),
+      })),
+    [selectedQuiz],
+  );
+  const selectedQuestionRound = useMemo(
+    () =>
+      selectedQuizQuestionsByRound.find((round) => round.id === selectedAnswerRoundId) ||
+      selectedQuizQuestionsByRound[0] ||
+      null,
+    [selectedAnswerRoundId, selectedQuizQuestionsByRound],
+  );
+  const selectedQuizQuestions = useMemo(
+    () => selectedQuestionRound?.questions || [],
+    [selectedQuestionRound],
+  );
   const canEditScores = Boolean(canManagerEditScores(activeManager) && onUpdateTeamScore);
 
   useEffect(() => {
@@ -10443,18 +10534,25 @@ function LiveControlPanel({
   const emergencyJoinWindowEndsMs = getEmergencyJoinWindowEndsMs(lobbyData);
   const emergencyJoinOpen = isEmergencyJoinWindowActive(lobbyData, now);
   const normalizedTeamSearch = normalizeTeamName(teamSearch || "");
-  const visibleTeamStatuses = teamStatuses.filter((team) => {
-    if (!normalizedTeamSearch) return true;
+  const visibleTeamStatuses = useMemo(
+    () =>
+      teamStatuses.filter((team) => {
+        if (!normalizedTeamSearch) return true;
 
-    return (
-      normalizeTeamName(team.teamName || "").includes(normalizedTeamSearch) ||
-      (team.teamNameNormalized || "").includes(normalizedTeamSearch)
-    );
-  });
-  const selectedTeam =
-    visibleTeamStatuses.find((team) => team.id === selectedTeamId) ||
-    visibleTeamStatuses[0] ||
-    null;
+        return (
+          normalizeTeamName(team.teamName || "").includes(normalizedTeamSearch) ||
+          (team.teamNameNormalized || "").includes(normalizedTeamSearch)
+        );
+      }),
+    [normalizedTeamSearch, teamStatuses],
+  );
+  const selectedTeam = useMemo(
+    () =>
+      visibleTeamStatuses.find((team) => team.id === selectedTeamId) ||
+      visibleTeamStatuses[0] ||
+      null,
+    [selectedTeamId, visibleTeamStatuses],
+  );
   const selectedQuestionIds = selectedQuestions.map((question) => question.id);
   const canEditScores = Boolean(canManagerEditScores(activeManager) && onUpdateTeamScore);
 
