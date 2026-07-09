@@ -476,6 +476,7 @@ function saveRecentPlayerSession(session) {
   window.localStorage.setItem(
     RECENT_PLAYER_SESSION_KEY,
     JSON.stringify({
+      cachedSession: session.cachedSession || null,
       lobbyCode: normalizeQuizCode(session.lobbyCode),
       playerName: session.playerName || "",
       rankingOptIn: Boolean(session.rankingOptIn),
@@ -1992,6 +1993,10 @@ function App() {
   useEffect(() => {
     if (sessionId && sessionData?.lobbyCode && !sessionData?.managerOnly) {
       saveRecentPlayerSession({
+        cachedSession: {
+          ...sessionData,
+          id: sessionId,
+        },
         lobbyCode: sessionData.lobbyCode,
         playerName: sessionData.playerName,
         rankingOptIn: sessionData.rankingOptIn,
@@ -2016,6 +2021,20 @@ function App() {
     if (!recentSession) {
       setIsRestoringSession(false);
       return undefined;
+    }
+
+    if (recentSession.cachedSession && !sessionData && !sessionId) {
+      setLobbyCode(recentSession.lobbyCode);
+      setTeamName(recentSession.cachedSession.teamName || recentSession.teamName || "");
+      setPlayerName(recentSession.cachedSession.playerName || recentSession.playerName || "");
+      setSessionId(recentSession.sessionId);
+      setSessionData({
+        ...recentSession.cachedSession,
+        id: recentSession.sessionId,
+        lobbyCode: recentSession.lobbyCode,
+      });
+      setEntryMode("known");
+      setAppView("main");
     }
 
     let cancelled = false;
@@ -9378,15 +9397,13 @@ function TeamDirectory({
   const [selectedAnswerRoundId, setSelectedAnswerRoundId] = useState(null);
   const [teamSearch, setTeamSearch] = useState("");
   const [voucherMessage, setVoucherMessage] = useState("");
-  const [scoreDraft, setScoreDraft] = useState("");
-  const [scoreNoteDraft, setScoreNoteDraft] = useState("");
   const [scoreMessage, setScoreMessage] = useState("");
-  const [questionAnswerDrafts, setQuestionAnswerDrafts] = useState({});
-  const [questionScoreDrafts, setQuestionScoreDrafts] = useState({});
-  const [questionNoteDrafts, setQuestionNoteDrafts] = useState({});
   const [questionMessages, setQuestionMessages] = useState({});
-  const hydratedSessionKeyRef = useRef("");
-  const hydratedQuestionRoundRef = useRef("");
+  const scoreInputRef = useRef(null);
+  const scoreNoteInputRef = useRef(null);
+  const questionAnswerInputRefs = useRef({});
+  const questionScoreInputRefs = useRef({});
+  const questionNoteInputRefs = useRef({});
   const isNarrow = useIsNarrowScreen();
   const globalRankingMap = useMemo(
     () => new Map(globalRankingRows.map((row) => [row.teamId, row])),
@@ -9526,76 +9543,21 @@ function TeamDirectory({
 
   useEffect(() => {
     if (!selectedSession) {
-      hydratedSessionKeyRef.current = "";
-      hydratedQuestionRoundRef.current = "";
-      setScoreDraft("");
-      setScoreNoteDraft("");
       setScoreMessage("");
-      setQuestionAnswerDrafts({});
-      setQuestionScoreDrafts({});
-      setQuestionNoteDrafts({});
       setQuestionMessages({});
       return;
     }
-
-    const nextSessionKey = selectedSession.sessionKey || selectedSession.id || "";
-    const nextQuestionRoundKey = selectedQuestionRound?.id || "";
-    const shouldHydrateScoreDrafts = hydratedSessionKeyRef.current !== nextSessionKey;
-    const shouldHydrateQuestionDrafts =
-      shouldHydrateScoreDrafts || hydratedQuestionRoundRef.current !== nextQuestionRoundKey;
-
-    if (shouldHydrateScoreDrafts) {
-      setScoreDraft(String(Number(selectedSession.totalPoints) || 0));
-      setScoreNoteDraft(selectedSession.scoreAdjustment?.note || "");
-      setScoreMessage("");
-    }
-
-    if (shouldHydrateQuestionDrafts) {
-      setQuestionAnswerDrafts(
-        Object.fromEntries(
-          selectedQuizQuestions.map((question) => [
-            question.id,
-            selectedSession.answers?.[question.id]?.text || "",
-          ]),
-        ),
-      );
-      setQuestionScoreDrafts(
-        Object.fromEntries(
-          selectedQuizQuestions.map((question) => [
-            question.id,
-            String(Number(selectedSession.answers?.[question.id]?.pointsAwarded) || 0),
-          ]),
-        ),
-      );
-      setQuestionNoteDrafts(
-        Object.fromEntries(
-          selectedQuizQuestions.map((question) => [
-            question.id,
-            selectedSession.answers?.[question.id]?.manualOverride?.note ||
-              selectedSession.answers?.[question.id]?.managerOverride?.note ||
-              "",
-          ]),
-        ),
-      );
-      setQuestionMessages({});
-    }
-
-    hydratedSessionKeyRef.current = nextSessionKey;
-    hydratedQuestionRoundRef.current = nextQuestionRoundKey;
-  }, [
-    selectedQuestionRound?.id,
-    selectedQuizQuestions,
-    selectedSession?.id,
-    selectedSession?.sessionKey,
-  ]);
+    setScoreMessage("");
+    setQuestionMessages({});
+  }, [selectedQuestionRound?.id, selectedSession?.id, selectedSession?.sessionKey]);
 
   async function handleScoreSave() {
     if (!selectedTeam || !selectedSession || !canEditScores) return;
 
     const result = await onUpdateTeamScore({
       lobbyCode: selectedSession.lobbyCode || selectedSession.quizCode,
-      nextTotalPoints: scoreDraft,
-      note: scoreNoteDraft,
+      nextTotalPoints: scoreInputRef.current?.value ?? "0",
+      note: scoreNoteInputRef.current?.value ?? "",
       teamId: selectedSession.teamId || selectedSession.id,
       teamName: selectedSession.teamName || selectedTeam.teamName,
     });
@@ -9610,8 +9572,8 @@ function TeamDirectory({
 
     const result = await onUpdateTeamQuestionScore({
       lobbyCode: selectedSession.lobbyCode || selectedSession.quizCode,
-      nextPointsAwarded: questionScoreDrafts[question.id] ?? "0",
-      note: questionNoteDrafts[question.id] || "",
+      nextPointsAwarded: questionScoreInputRefs.current[question.id]?.value ?? "0",
+      note: questionNoteInputRefs.current[question.id]?.value ?? "",
       questionId: question.id,
       questionTitle: question.title,
       teamId: selectedSession.teamId || selectedSession.id,
@@ -9630,9 +9592,9 @@ function TeamDirectory({
     }
 
     const result = await onSubmitManagerAnswerForTeam({
-      answerText: questionAnswerDrafts[question.id] ?? "",
+      answerText: questionAnswerInputRefs.current[question.id]?.value ?? "",
       lobbyCode: selectedSession.lobbyCode || selectedSession.quizCode,
-      note: questionNoteDrafts[question.id] || "",
+      note: questionNoteInputRefs.current[question.id]?.value ?? "",
       question,
       teamId: selectedSession.teamId || selectedSession.id,
       teamName: selectedSession.teamName || selectedTeam.teamName,
@@ -10040,8 +10002,9 @@ function TeamDirectory({
                     <label style={{ display: "grid", gap: 6 }}>
                       <span style={{ color: "#cbd5e1" }}>Neuer Gesamtpunktestand</span>
                       <input
-                        value={scoreDraft}
-                        onChange={(event) => setScoreDraft(event.target.value)}
+                        key={`score__${selectedSession.sessionKey || selectedSession.id}`}
+                        defaultValue={String(Number(selectedSession.totalPoints) || 0)}
+                        ref={scoreInputRef}
                         inputMode="numeric"
                         style={inputStyle}
                       />
@@ -10049,8 +10012,9 @@ function TeamDirectory({
                     <label style={{ display: "grid", gap: 6 }}>
                       <span style={{ color: "#cbd5e1" }}>Notiz fuer Manager</span>
                       <input
-                        value={scoreNoteDraft}
-                        onChange={(event) => setScoreNoteDraft(event.target.value)}
+                        key={`score-note__${selectedSession.sessionKey || selectedSession.id}`}
+                        defaultValue={selectedSession.scoreAdjustment?.note || ""}
+                        ref={scoreNoteInputRef}
                         placeholder="z. B. Bewertungsfehler bei Frage 4"
                         style={inputStyle}
                       />
@@ -10231,13 +10195,15 @@ function TeamDirectory({
                                   Antwort fuer diese Frage
                                 </span>
                                 <input
-                                  value={questionAnswerDrafts[question.id] ?? ""}
-                                  onChange={(event) =>
-                                    setQuestionAnswerDrafts((current) => ({
-                                      ...current,
-                                      [question.id]: event.target.value,
-                                    }))
-                                  }
+                                  key={`answer__${selectedSession.sessionKey || selectedSession.id}__${selectedQuestionRound?.id || "round"}__${question.id}`}
+                                  defaultValue={selectedSession.answers?.[question.id]?.text || ""}
+                                  ref={(node) => {
+                                    if (node) {
+                                      questionAnswerInputRefs.current[question.id] = node;
+                                    } else {
+                                      delete questionAnswerInputRefs.current[question.id];
+                                    }
+                                  }}
                                   placeholder="Antwort fuer das Team nachtragen"
                                   style={inputStyle}
                                 />
@@ -10247,13 +10213,15 @@ function TeamDirectory({
                                   Punkte fuer diese Frage
                                 </span>
                                 <input
-                                  value={questionScoreDrafts[question.id] ?? ""}
-                                  onChange={(event) =>
-                                    setQuestionScoreDrafts((current) => ({
-                                      ...current,
-                                      [question.id]: event.target.value,
-                                    }))
-                                  }
+                                  key={`points__${selectedSession.sessionKey || selectedSession.id}__${selectedQuestionRound?.id || "round"}__${question.id}`}
+                                  defaultValue={String(Number(selectedSession.answers?.[question.id]?.pointsAwarded) || 0)}
+                                  ref={(node) => {
+                                    if (node) {
+                                      questionScoreInputRefs.current[question.id] = node;
+                                    } else {
+                                      delete questionScoreInputRefs.current[question.id];
+                                    }
+                                  }}
                                   inputMode="decimal"
                                   style={inputStyle}
                                 />
@@ -10261,13 +10229,19 @@ function TeamDirectory({
                               <label style={{ display: "grid", gap: 6 }}>
                                 <span style={{ color: "#cbd5e1" }}>Notiz</span>
                                 <input
-                                  value={questionNoteDrafts[question.id] ?? ""}
-                                  onChange={(event) =>
-                                    setQuestionNoteDrafts((current) => ({
-                                      ...current,
-                                      [question.id]: event.target.value,
-                                    }))
+                                  key={`note__${selectedSession.sessionKey || selectedSession.id}__${selectedQuestionRound?.id || "round"}__${question.id}`}
+                                  defaultValue={
+                                    selectedSession.answers?.[question.id]?.manualOverride?.note ||
+                                    selectedSession.answers?.[question.id]?.managerOverride?.note ||
+                                    ""
                                   }
+                                  ref={(node) => {
+                                    if (node) {
+                                      questionNoteInputRefs.current[question.id] = node;
+                                    } else {
+                                      delete questionNoteInputRefs.current[question.id];
+                                    }
+                                  }}
                                   placeholder="z. B. Antwort trotzdem gelten lassen"
                                   style={inputStyle}
                                 />
