@@ -9755,7 +9755,6 @@ function TeamDirectory({
 
             if (sessionTeamKey !== normalizedTeamId) return null;
             if (data.managerOnly) return null;
-            if (data.quizId && data.quizId !== latestQuizId) return null;
 
             return {
               id: snapshot.id,
