@@ -1970,6 +1970,7 @@ function App() {
   const [now, setNow] = useState(() => Date.now());
   const [pendingTeamCreate, setPendingTeamCreate] = useState(null);
   const [appView, setAppView] = useState("main");
+  const [adminTab, setAdminTab] = useState("live");
   const [pointToast, setPointToast] = useState(null);
   const [pubQuizzes, setPubQuizzes] = useState([]);
   const [quizManagerMessage, setQuizManagerMessage] = useState("");
@@ -1977,7 +1978,12 @@ function App() {
   const syncedAnswerDraftsRef = useRef({});
   const hasHydratedLobbyRoundRef = useRef(false);
   const lastLobbyActiveRoundRef = useRef(null);
-  const shouldLoadArchiveData = Boolean(activeManager && appView === "admin");
+  const shouldLoadArchiveData = Boolean(
+    activeManager &&
+      appView === "admin" &&
+      (adminTab === "teams" || adminTab === "vouchers"),
+  );
+  const shouldLoadGlobalTeamIndex = Boolean(appView === "ranking");
 
   useEffect(() => {
     if (sessionId && sessionData?.lobbyCode && !sessionData?.managerOnly) {
@@ -2289,8 +2295,7 @@ function App() {
   }, [activeManager]);
 
   useEffect(() => {
-    if (!activeManager && !sessionData) return undefined;
-    if (!activeManager && appView !== "ranking") return undefined;
+    if (!shouldLoadGlobalTeamIndex) return undefined;
 
     const sessionsRef = collectionGroup(db, "teamSessions");
 
@@ -2305,7 +2310,7 @@ function App() {
 
       setAllTeams(teams);
     });
-  }, [activeManager, appView, sessionData]);
+  }, [shouldLoadGlobalTeamIndex]);
 
   useEffect(() => {
     if (!shouldLoadArchiveData && appView !== "vouchers") return undefined;
@@ -2557,7 +2562,12 @@ function App() {
     );
     const eventId = getEventId(sessionData.lobbyCode);
     const rowsByTeamId = new Map(normalizedRows.map((row) => [row.teamId, row]));
-    const teamsForGlobalRanking = allTeams.length > 0 ? allTeams : registeredTeams;
+    const teamsForGlobalRanking =
+      allTeamSessions.length > 0
+        ? allTeamSessions
+        : allTeams.length > 0
+          ? allTeams
+          : registeredTeams;
     const nextAllTeams = teamsForGlobalRanking.map((team) => {
       if (team.lobbyCode !== sessionData.lobbyCode) {
         return team;
@@ -5555,6 +5565,7 @@ function App() {
     return (
       <>
         <AdminScreen
+          adminTab={adminTab}
           activeManager={activeManager}
           allTeams={allTeams}
           allTeamSessions={allTeamSessions}
@@ -5564,6 +5575,7 @@ function App() {
           lobbyData={lobbyData}
           now={now}
           onAddRoundExtraTime={addRoundExtraTime}
+          onChangeAdminTab={setAdminTab}
           onCloseNewRegistrations={closeNewRegistrations}
           onCreateVoucherAssignment={createVoucherAssignment}
           onDeletePubQuiz={deletePubQuiz}
@@ -7940,6 +7952,7 @@ function VoucherScreen({
 }
 
 function AdminScreen({
+  adminTab,
   activeManager,
   allTeams,
   allTeamSessions,
@@ -7951,6 +7964,7 @@ function AdminScreen({
   managers,
   now,
   onAddRoundExtraTime,
+  onChangeAdminTab,
   onCloseNewRegistrations,
   onCreateVoucherAssignment,
   onDeletePubQuiz,
@@ -7982,7 +7996,6 @@ function AdminScreen({
   sessionData,
   teamProfiles,
 }) {
-  const [personalTab, setPersonalTab] = useState("live");
   const canManageManagers = canManageManagerRecords(activeManager, managers);
   const isNarrow = useIsNarrowScreen();
   const selectedQuestions = selectedRound.questionIds
@@ -8021,10 +8034,10 @@ function AdminScreen({
   ];
 
   useEffect(() => {
-    if (personalTab === "managers" && !canManageManagers) {
-      setPersonalTab("live");
+    if (adminTab === "managers" && !canManageManagers) {
+      onChangeAdminTab?.("live");
     }
-  }, [canManageManagers, personalTab]);
+  }, [adminTab, canManageManagers, onChangeAdminTab]);
 
   return (
     <main style={pageStyle}>
@@ -8062,12 +8075,12 @@ function AdminScreen({
 
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 24 }}>
           {tabs.map(([tabId, label]) => {
-            const isSelected = personalTab === tabId;
+            const isSelected = adminTab === tabId;
 
             return (
               <button
                 key={tabId}
-                onClick={() => setPersonalTab(tabId)}
+                onClick={() => onChangeAdminTab?.(tabId)}
                 style={{
                   padding: "10px 14px",
                   borderRadius: 999,
@@ -8083,7 +8096,7 @@ function AdminScreen({
           })}
         </div>
 
-        {personalTab === "live" ? (
+        {adminTab === "live" ? (
           <LiveControlPanel
             activeManager={activeManager}
             answersRevealed={answersRevealed}
@@ -8105,7 +8118,7 @@ function AdminScreen({
             selectedRound={selectedRound}
             teamStatuses={teamStatuses}
           />
-        ) : personalTab === "teams" ? (
+        ) : adminTab === "teams" ? (
           <TeamDirectory
             activeManager={activeManager}
             allVoucherDocs={allVoucherDocs}
@@ -8117,9 +8130,9 @@ function AdminScreen({
             teamProfiles={teamProfiles}
             teams={allTeamSessions.length ? allTeamSessions : allTeams}
           />
-        ) : personalTab === "feedback" ? (
+        ) : adminTab === "feedback" ? (
           <FeedbackInbox entries={feedbackEntries} />
-        ) : personalTab === "vouchers" ? (
+        ) : adminTab === "vouchers" ? (
           <VoucherDirectory
             activeManager={activeManager}
             allTeamSessions={allTeamSessions}
@@ -8132,7 +8145,7 @@ function AdminScreen({
             pubQuizzes={pubQuizzes}
             teamProfiles={teamProfiles}
           />
-        ) : personalTab === "managers" && canManageManagers ? (
+        ) : adminTab === "managers" && canManageManagers ? (
           <ManagerDirectory
             activeManager={activeManager}
             managers={managers}
