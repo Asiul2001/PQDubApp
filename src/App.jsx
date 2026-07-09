@@ -2140,10 +2140,16 @@ function App() {
       if (!snapshot.exists()) return;
 
       const data = snapshot.data();
-      setSessionData({
+      setSessionData((currentSession) => ({
+        ...(currentSession || {}),
         id: snapshot.id,
         ...data,
-      });
+        lobbyCode:
+          data?.lobbyCode ||
+          currentSession?.lobbyCode ||
+          recentSessionCandidate?.lobbyCode ||
+          "",
+      }));
       setAnswerDrafts((currentDrafts) => {
         const nextDrafts = { ...currentDrafts };
         const previousSyncedDrafts = syncedAnswerDraftsRef.current || {};
