@@ -1977,6 +1977,7 @@ function App() {
   const syncedAnswerDraftsRef = useRef({});
   const hasHydratedLobbyRoundRef = useRef(false);
   const lastLobbyActiveRoundRef = useRef(null);
+  const shouldLoadArchiveData = Boolean(activeManager && appView === "admin");
 
   useEffect(() => {
     if (sessionId && sessionData?.lobbyCode && !sessionData?.managerOnly) {
@@ -2101,7 +2102,10 @@ function App() {
       if (!snapshot.exists()) return;
 
       const data = snapshot.data();
-      setSessionData(data);
+      setSessionData({
+        id: snapshot.id,
+        ...data,
+      });
       setAnswerDrafts((currentDrafts) => {
         const nextDrafts = { ...currentDrafts };
         const previousSyncedDrafts = syncedAnswerDraftsRef.current || {};
@@ -2155,14 +2159,18 @@ function App() {
   }, [sessionData?.lobbyCode]);
 
   useEffect(() => {
-    if (!sessionData?.lobbyCode || activePubQuiz) return undefined;
+    const activeQuizCode = normalizeQuizCode(activePubQuiz?.quizCode || "");
+    const targetLobbyCode = normalizeQuizCode(sessionData?.lobbyCode || "");
+
+    if (!targetLobbyCode) return undefined;
+    if (activeQuizCode === targetLobbyCode) return undefined;
 
     let cancelled = false;
 
     async function loadQuizForSession() {
       const quizzesQuery = query(
         collection(db, "pubQuizzes"),
-        where("quizCode", "==", sessionData.lobbyCode),
+        where("quizCode", "==", targetLobbyCode),
       );
       const quizSnapshot = await getDocs(quizzesQuery);
       const matchingQuiz = quizSnapshot.docs[0];
@@ -2187,7 +2195,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [activePubQuiz, sessionData?.lobbyCode]);
+  }, [activePubQuiz?.quizCode, sessionData?.lobbyCode]);
 
   useEffect(() => {
     if (!activeManager) return undefined;
@@ -2300,60 +2308,34 @@ function App() {
   }, [activeManager, appView, sessionData]);
 
   useEffect(() => {
-    if (!activeManager && appView !== "vouchers") return undefined;
+    if (!shouldLoadArchiveData && appView !== "vouchers") return undefined;
 
-    let cancelled = false;
-    const quizEventsRef = collection(db, "quizEvents");
+    const sessionsRef = collectionGroup(db, "teamSessions");
 
-    async function loadAllTeamSessions() {
-      try {
-        const eventsSnapshot = await getDocs(quizEventsRef);
-        const sessionSnapshots = await Promise.all(
-          eventsSnapshot.docs.map((eventDoc) =>
-            getDocs(collection(db, "quizEvents", eventDoc.id, "teamSessions")),
-          ),
-        );
+    return onSnapshot(sessionsRef, (snapshot) => {
+      const sessions = snapshot.docs
+        .map((teamDoc) => {
+          const data = teamDoc.data();
 
-        if (cancelled) return;
+          return {
+            id: teamDoc.id,
+            sessionKey: `${data.eventId || "event"}__${teamDoc.id}`,
+            ...data,
+          };
+        })
+        .filter((session) => session.quizId === latestQuizId)
+        .sort((a, b) => {
+          const timeDifference =
+            getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a));
+          return timeDifference || a.teamName.localeCompare(b.teamName);
+        });
 
-        const sessions = sessionSnapshots
-          .flatMap((snapshot) =>
-            snapshot.docs.map((teamDoc) => {
-              const data = teamDoc.data();
-
-              return {
-                id: teamDoc.id,
-                sessionKey: `${data.eventId || "event"}__${teamDoc.id}`,
-                ...data,
-              };
-            }),
-          )
-          .sort((a, b) => {
-            const timeDifference =
-              getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a));
-            return timeDifference || a.teamName.localeCompare(b.teamName);
-          });
-
-        setAllTeamSessions(sessions);
-      } catch (error) {
-        console.error("ALL TEAM SESSIONS LOAD ERROR:", error);
-      }
-    }
-
-    loadAllTeamSessions();
-
-    const unsubscribe = onSnapshot(quizEventsRef, () => {
-      loadAllTeamSessions();
+      setAllTeamSessions(sessions);
     });
-
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
-  }, [activeManager, appView]);
+  }, [appView, shouldLoadArchiveData]);
 
   useEffect(() => {
-    if (!activeManager && appView !== "vouchers") return undefined;
+    if (!shouldLoadArchiveData && appView !== "vouchers") return undefined;
 
     let cancelled = false;
     const quizEventsRef = collection(db, "quizEvents");
@@ -2393,10 +2375,10 @@ function App() {
       cancelled = true;
       unsubscribe();
     };
-  }, [activeManager, appView]);
+  }, [appView, shouldLoadArchiveData]);
 
   useEffect(() => {
-    if (!activeManager && appView !== "vouchers") return undefined;
+    if (!shouldLoadArchiveData && appView !== "vouchers") return undefined;
 
     const teamsRef = collection(db, "teams");
 
@@ -2407,7 +2389,7 @@ function App() {
 
       setTeamProfiles(nextProfiles);
     });
-  }, [activeManager, appView]);
+  }, [appView, shouldLoadArchiveData]);
 
   useEffect(() => {
     if (!activeManager && appView !== "ranking") return undefined;
@@ -2448,19 +2430,8 @@ function App() {
   }, [activeManager, appView, sessionData]);
 
   useEffect(() => {
-    if (activeManager) {
+    if (shouldLoadArchiveData) {
       let cancelled = false;
-      const eventIds = Array.from(
-        new Set(allTeamSessions.map((session) => session.eventId).filter(Boolean)),
-      );
-      const teamIds = Array.from(
-        new Set(
-          [
-            ...allTeamSessions.map((session) => session.teamId || session.id),
-            ...teamProfiles.map((profile) => profile.id),
-          ].filter(Boolean),
-        ),
-      );
 
       async function refreshAllVoucherDocs() {
         try {
@@ -2492,22 +2463,8 @@ function App() {
 
       refreshAllVoucherDocs();
 
-      const unsubscribeFns = [
-        ...eventIds.map((eventId) =>
-          onSnapshot(collection(db, "quizEvents", eventId, "vouchers"), () => {
-            refreshAllVoucherDocs();
-          }),
-        ),
-        ...teamIds.map((teamId) =>
-          onSnapshot(collection(db, "teams", teamId, "vouchers"), () => {
-            refreshAllVoucherDocs();
-          }),
-        ),
-      ];
-
       return () => {
         cancelled = true;
-        unsubscribeFns.forEach((unsubscribe) => unsubscribe());
       };
     }
 
@@ -2553,13 +2510,13 @@ function App() {
       unsubscribe();
     };
   }, [
-    activeManager,
     allTeamSessions,
     appView,
     sessionData?.lobbyCode,
     sessionData?.teamId,
     sessionData?.teamNameNormalized,
     sessionId,
+    shouldLoadArchiveData,
     teamProfiles,
   ]);
 
@@ -9377,6 +9334,8 @@ function TeamDirectory({
   const [questionScoreDrafts, setQuestionScoreDrafts] = useState({});
   const [questionNoteDrafts, setQuestionNoteDrafts] = useState({});
   const [questionMessages, setQuestionMessages] = useState({});
+  const hydratedSessionKeyRef = useRef("");
+  const hydratedQuestionRoundRef = useRef("");
   const isNarrow = useIsNarrowScreen();
   const globalRankingMap = useMemo(
     () => new Map(globalRankingRows.map((row) => [row.teamId, row])),
@@ -9516,6 +9475,8 @@ function TeamDirectory({
 
   useEffect(() => {
     if (!selectedSession) {
+      hydratedSessionKeyRef.current = "";
+      hydratedQuestionRoundRef.current = "";
       setScoreDraft("");
       setScoreNoteDraft("");
       setScoreMessage("");
@@ -9526,41 +9487,56 @@ function TeamDirectory({
       return;
     }
 
-    setScoreDraft(String(Number(selectedSession.totalPoints) || 0));
-    setScoreNoteDraft(selectedSession.scoreAdjustment?.note || "");
-    setScoreMessage("");
-    setQuestionAnswerDrafts(
-      Object.fromEntries(
-        selectedQuizQuestions.map((question) => [
-          question.id,
-          selectedSession.answers?.[question.id]?.text || "",
-        ]),
-      ),
-    );
-    setQuestionScoreDrafts(
-      Object.fromEntries(
-        selectedQuizQuestions.map((question) => [
-          question.id,
-          String(Number(selectedSession.answers?.[question.id]?.pointsAwarded) || 0),
-        ]),
-      ),
-    );
-    setQuestionNoteDrafts(
-      Object.fromEntries(
-        selectedQuizQuestions.map((question) => [
-          question.id,
-          selectedSession.answers?.[question.id]?.manualOverride?.note ||
-            selectedSession.answers?.[question.id]?.managerOverride?.note ||
-            "",
-        ]),
-      ),
-    );
-    setQuestionMessages({});
+    const nextSessionKey = selectedSession.sessionKey || selectedSession.id || "";
+    const nextQuestionRoundKey = selectedQuestionRound?.id || "";
+    const shouldHydrateScoreDrafts = hydratedSessionKeyRef.current !== nextSessionKey;
+    const shouldHydrateQuestionDrafts =
+      shouldHydrateScoreDrafts || hydratedQuestionRoundRef.current !== nextQuestionRoundKey;
+
+    if (shouldHydrateScoreDrafts) {
+      setScoreDraft(String(Number(selectedSession.totalPoints) || 0));
+      setScoreNoteDraft(selectedSession.scoreAdjustment?.note || "");
+      setScoreMessage("");
+    }
+
+    if (shouldHydrateQuestionDrafts) {
+      setQuestionAnswerDrafts(
+        Object.fromEntries(
+          selectedQuizQuestions.map((question) => [
+            question.id,
+            selectedSession.answers?.[question.id]?.text || "",
+          ]),
+        ),
+      );
+      setQuestionScoreDrafts(
+        Object.fromEntries(
+          selectedQuizQuestions.map((question) => [
+            question.id,
+            String(Number(selectedSession.answers?.[question.id]?.pointsAwarded) || 0),
+          ]),
+        ),
+      );
+      setQuestionNoteDrafts(
+        Object.fromEntries(
+          selectedQuizQuestions.map((question) => [
+            question.id,
+            selectedSession.answers?.[question.id]?.manualOverride?.note ||
+              selectedSession.answers?.[question.id]?.managerOverride?.note ||
+              "",
+          ]),
+        ),
+      );
+      setQuestionMessages({});
+    }
+
+    hydratedSessionKeyRef.current = nextSessionKey;
+    hydratedQuestionRoundRef.current = nextQuestionRoundKey;
   }, [
+    selectedQuestionRound?.id,
     selectedQuizQuestions,
-    selectedSession,
     selectedSession?.answers,
     selectedSession?.id,
+    selectedSession?.sessionKey,
     selectedSession?.scoreAdjustment?.note,
     selectedSession?.totalPoints,
   ]);
@@ -10524,6 +10500,7 @@ function LiveControlPanel({
   const [questionMessages, setQuestionMessages] = useState({});
   const [podiumMessage, setPodiumMessage] = useState("");
   const [teamSearch, setTeamSearch] = useState("");
+  const hydratedLiveTeamIdRef = useRef("");
   const roundUnlocked = canRevealAnswers || answersRevealed;
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
@@ -10564,6 +10541,7 @@ function LiveControlPanel({
 
   useEffect(() => {
     if (!selectedTeam) {
+      hydratedLiveTeamIdRef.current = "";
       setScoreDraft("");
       setScoreNoteDraft("");
       setScoreMessage("");
@@ -10574,34 +10552,40 @@ function LiveControlPanel({
       return;
     }
 
-    setScoreDraft(String(Number(selectedTeam.totalPoints) || 0));
-    setScoreNoteDraft(selectedTeam.scoreAdjustment?.note || "");
-    setScoreMessage("");
-    setQuestionAnswerDrafts(
-      Object.fromEntries(
-        selectedQuestions.map((question) => [
-          question.id,
-          selectedTeam.answers?.[question.id]?.text || "",
-        ]),
-      ),
-    );
-    setQuestionScoreDrafts(
-      Object.fromEntries(
-        selectedQuestions.map((question) => [
-          question.id,
-          String(Number(selectedTeam.answers?.[question.id]?.pointsAwarded) || 0),
-        ]),
-      ),
-    );
-    setQuestionNoteDrafts(
-      Object.fromEntries(
-        selectedQuestions.map((question) => [
-          question.id,
-          selectedTeam.answers?.[question.id]?.manualOverride?.note || "",
-        ]),
-      ),
-    );
-    setQuestionMessages({});
+    const shouldHydrateDrafts = hydratedLiveTeamIdRef.current !== selectedTeam.id;
+
+    if (shouldHydrateDrafts) {
+      setScoreDraft(String(Number(selectedTeam.totalPoints) || 0));
+      setScoreNoteDraft(selectedTeam.scoreAdjustment?.note || "");
+      setScoreMessage("");
+      setQuestionAnswerDrafts(
+        Object.fromEntries(
+          selectedQuestions.map((question) => [
+            question.id,
+            selectedTeam.answers?.[question.id]?.text || "",
+          ]),
+        ),
+      );
+      setQuestionScoreDrafts(
+        Object.fromEntries(
+          selectedQuestions.map((question) => [
+            question.id,
+            String(Number(selectedTeam.answers?.[question.id]?.pointsAwarded) || 0),
+          ]),
+        ),
+      );
+      setQuestionNoteDrafts(
+        Object.fromEntries(
+          selectedQuestions.map((question) => [
+            question.id,
+            selectedTeam.answers?.[question.id]?.manualOverride?.note || "",
+          ]),
+        ),
+      );
+      setQuestionMessages({});
+    }
+
+    hydratedLiveTeamIdRef.current = selectedTeam.id;
   }, [
     selectedQuestions,
     selectedTeam?.answers,
