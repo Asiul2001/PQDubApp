@@ -4267,8 +4267,17 @@ function App() {
         return { ok: false, message: "Team-Session nicht gefunden." };
       }
 
-        const currentSession = sessionSnapshot.data();
-        const previousPoints = Number(currentSession.totalPoints) || 0;
+      const currentSession = sessionSnapshot.data();
+      const auditSummary = await auditTeamSessionScores({
+        lobbyCode: targetLobbyCode,
+        teamId,
+        reason: "Gesamtpunktestand",
+      });
+      const auditedSnapshot = await getDoc(sessionRef);
+      const auditedSession = auditedSnapshot.exists()
+        ? auditedSnapshot.data()
+        : currentSession;
+      const previousPoints = Number(auditedSession.totalPoints) || 0;
 
       await setDoc(
         sessionRef,
@@ -4287,11 +4296,6 @@ function App() {
         { merge: true },
       );
 
-      const auditSummary = await auditTeamSessionScores({
-        lobbyCode: targetLobbyCode,
-        teamId,
-        reason: "Gesamtpunktestand",
-      });
       const correctedMessage =
         auditSummary.totalCorrections > 0
           ? ` Automatisch korrigiert: ${auditSummary.totalCorrections} Abweichung${
