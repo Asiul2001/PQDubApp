@@ -710,6 +710,57 @@ function getAnswerPointsTotal(answers = {}) {
   );
 }
 
+function areMatchedSegmentsEqual(left = [], right = []) {
+  return JSON.stringify(left || []) === JSON.stringify(right || []);
+}
+
+function buildAuditedAnswers(answers = {}, quizQuestions = {}) {
+  const nextAnswers = {};
+  let correctedQuestionCount = 0;
+
+  Object.entries(answers || {}).forEach(([questionId, currentAnswer]) => {
+    const quizQuestion = quizQuestions?.[questionId];
+
+    if (!quizQuestion || currentAnswer?.manualOverride?.active) {
+      nextAnswers[questionId] = currentAnswer;
+      return;
+    }
+
+    const result = checkAnswer(
+      currentAnswer?.text ?? "",
+      quizQuestion.acceptedAnswers || [],
+      quizQuestion.points || 0,
+    );
+    const nextAnswer = {
+      ...currentAnswer,
+      locked:
+        result.result === "correct"
+          ? true
+          : Boolean(currentAnswer?.locked),
+      matchedSegments: result.matchedSegments,
+      pointsAwarded: result.result === "correct" ? result.pointsAwarded : 0,
+      result: result.result,
+    };
+    const changed =
+      (currentAnswer?.result || "") !== nextAnswer.result ||
+      Boolean(currentAnswer?.locked) !== Boolean(nextAnswer.locked) ||
+      (Number(currentAnswer?.pointsAwarded) || 0) !== nextAnswer.pointsAwarded ||
+      !areMatchedSegmentsEqual(
+        currentAnswer?.matchedSegments || [],
+        nextAnswer.matchedSegments || [],
+      );
+
+    if (changed) correctedQuestionCount += 1;
+    nextAnswers[questionId] = nextAnswer;
+  });
+
+  return {
+    correctedQuestionCount,
+    nextAnswers,
+    nextTotalPoints: getAnswerPointsTotal(nextAnswers),
+  };
+}
+
 function getQuizLabelForSession(session, pubQuizzes = []) {
   const matchingQuiz = pubQuizzes.find(
     (quiz) =>
@@ -1867,6 +1918,8 @@ function App() {
   const [quizManagerMessage, setQuizManagerMessage] = useState("");
   const [issuedTeamPassword, setIssuedTeamPassword] = useState(null);
   const syncedAnswerDraftsRef = useRef({});
+  const hasHydratedLobbyRoundRef = useRef(false);
+  const lastLobbyActiveRoundRef = useRef(null);
 
   useEffect(() => {
     const managersRef = collection(db, "managers");
@@ -1890,11 +1943,31 @@ function App() {
     const lobbyRoundId = lobbyData?.activeRoundId;
 
     if (!lobbyRoundId) return;
-    if (lobbyRoundId === activeRoundId) return;
     if (!quizRounds.some((round) => round.id === lobbyRoundId)) return;
+    if (!hasHydratedLobbyRoundRef.current) {
+      hasHydratedLobbyRoundRef.current = true;
+      lastLobbyActiveRoundRef.current = lobbyRoundId;
+      if (lobbyRoundId !== activeRoundId) {
+        setActiveRoundId(lobbyRoundId);
+      }
+      return;
+    }
 
-    setActiveRoundId(lobbyRoundId);
+    const previousLobbyRoundId = lastLobbyActiveRoundRef.current;
+    const shouldFollowLobbyRound =
+      previousLobbyRoundId && activeRoundId === previousLobbyRoundId;
+
+    lastLobbyActiveRoundRef.current = lobbyRoundId;
+
+    if (shouldFollowLobbyRound && lobbyRoundId !== activeRoundId) {
+      setActiveRoundId(lobbyRoundId);
+    }
   }, [activeRoundId, lobbyData?.activeRoundId, quizRounds]);
+
+  useEffect(() => {
+    hasHydratedLobbyRoundRef.current = false;
+    lastLobbyActiveRoundRef.current = null;
+  }, [sessionData?.lobbyCode]);
 
   useEffect(() => {
     if (!sessionId || !sessionData?.lobbyCode) return undefined;
@@ -1935,7 +2008,7 @@ function App() {
   }, [sessionData?.lobbyCode, sessionId]);
 
   useEffect(() => {
-    const intervalId = window.setInterval(() => setNow(Date.now()), 80);
+    const intervalId = window.setInterval(() => setNow(Date.now()), 1000);
 
     return () => window.clearInterval(intervalId);
   }, []);
@@ -2008,6 +2081,7 @@ function App() {
   }, [activeManager]);
 
   useEffect(() => {
+    if (appView !== "vouchers") return undefined;
     if (!sessionData) {
       setTeamHistorySessions([]);
       return undefined;
@@ -2062,7 +2136,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [sessionData, sessionId]);
+  }, [appView, sessionData, sessionId]);
 
   useEffect(() => {
     if (!activeManager) return undefined;
@@ -2085,6 +2159,7 @@ function App() {
 
   useEffect(() => {
     if (!activeManager && !sessionData) return undefined;
+    if (!activeManager && appView !== "ranking") return undefined;
 
     const sessionsRef = collectionGroup(db, "teamSessions");
 
@@ -2099,10 +2174,10 @@ function App() {
 
       setAllTeams(teams);
     });
-  }, [sessionData]);
+  }, [activeManager, appView, sessionData]);
 
   useEffect(() => {
-    if (!activeManager) return undefined;
+    if (!activeManager && appView !== "vouchers") return undefined;
 
     let cancelled = false;
     const quizEventsRef = collection(db, "quizEvents");
@@ -2152,10 +2227,10 @@ function App() {
       cancelled = true;
       unsubscribe();
     };
-  }, [activeManager]);
+  }, [activeManager, appView]);
 
   useEffect(() => {
-    if (!activeManager) return undefined;
+    if (!activeManager && appView !== "vouchers") return undefined;
 
     let cancelled = false;
     const quizEventsRef = collection(db, "quizEvents");
@@ -2195,10 +2270,10 @@ function App() {
       cancelled = true;
       unsubscribe();
     };
-  }, [activeManager]);
+  }, [activeManager, appView]);
 
   useEffect(() => {
-    if (!activeManager && !sessionData) return undefined;
+    if (!activeManager && appView !== "vouchers") return undefined;
 
     const teamsRef = collection(db, "teams");
 
@@ -2209,10 +2284,10 @@ function App() {
 
       setTeamProfiles(nextProfiles);
     });
-  }, [activeManager, sessionData]);
+  }, [activeManager, appView]);
 
   useEffect(() => {
-    if (!activeManager && !sessionData) return undefined;
+    if (!activeManager && appView !== "ranking") return undefined;
 
     if (!sessionData?.lobbyCode) return undefined;
 
@@ -2234,10 +2309,12 @@ function App() {
       setDailyRankingRows(rows);
       setDailyRankingManualOrder(manualOrder);
     });
-  }, [activeManager, sessionData]);
+  }, [activeManager, appView, sessionData]);
 
   useEffect(() => {
-    if (!activeManager && !sessionData) return undefined;
+    if (!activeManager && appView !== "ranking" && appView !== "vouchers") {
+      return undefined;
+    }
 
     const globalRankingRef = doc(db, "rankings", "globalCurrent");
 
@@ -2245,7 +2322,7 @@ function App() {
       const rows = snapshot.exists() ? snapshot.data()?.rows || [] : [];
       setGlobalRankingRows(Array.isArray(rows) ? rows : []);
     });
-  }, [activeManager, sessionData]);
+  }, [activeManager, appView, sessionData]);
 
   useEffect(() => {
     if (activeManager) {
@@ -2311,6 +2388,7 @@ function App() {
       };
     }
 
+    if (appView !== "vouchers") return undefined;
     if (!sessionData?.lobbyCode) return undefined;
 
     let cancelled = false;
@@ -2354,6 +2432,7 @@ function App() {
   }, [
     activeManager,
     allTeamSessions,
+    appView,
     sessionData?.lobbyCode,
     sessionData?.teamId,
     sessionData?.teamNameNormalized,
@@ -2716,6 +2795,84 @@ function App() {
       ...currentDrafts,
       [questionId]: value,
     }));
+  }
+
+  async function auditTeamSessionScores({
+    lobbyCode = sessionData?.lobbyCode,
+    quizQuestions = questions,
+    reason = "Admin-Speicherung",
+    teamId,
+  } = {}) {
+    if (!lobbyCode || !quizQuestions) {
+      return {
+        correctedQuestionCount: 0,
+        correctedTeamCount: 0,
+        ok: false,
+        totalCorrections: 0,
+      };
+    }
+
+    const eventId = getEventId(lobbyCode);
+    const sessionRefs = teamId
+      ? [getTeamSessionRef(lobbyCode, teamId)]
+      : [];
+    const sessionSnapshots = teamId
+      ? await Promise.all(sessionRefs.map((ref) => getDoc(ref)))
+      : (await getDocs(collection(db, "quizEvents", eventId, "teamSessions"))).docs;
+    const batch = writeBatch(db);
+    let correctedQuestionCount = 0;
+    let correctedTeamCount = 0;
+    let totalCorrections = 0;
+
+    sessionSnapshots.forEach((snapshot, index) => {
+      if (!snapshot.exists()) return;
+
+      const currentSession = snapshot.data();
+      const { correctedQuestionCount: nextQuestionCorrections, nextAnswers, nextTotalPoints } =
+        buildAuditedAnswers(currentSession.answers || {}, quizQuestions);
+      const previousTotalPoints = Number(currentSession.totalPoints) || 0;
+      const totalChanged = nextTotalPoints !== previousTotalPoints;
+
+      if (!nextQuestionCorrections && !totalChanged) return;
+
+      const sessionRef = teamId ? sessionRefs[index] : snapshot.ref;
+      const correctionLabel = `${reason} automatisch geprueft`;
+
+      batch.set(
+        sessionRef,
+        {
+          answers: nextAnswers,
+          totalPoints: nextTotalPoints,
+          scoreAdjustment: currentSession.scoreAdjustment?.active
+            ? currentSession.scoreAdjustment
+            : {
+                active: true,
+                adjustedAt: serverTimestamp(),
+                adjustedBy: activeManager?.name || activeManager?.id || "Manager",
+                adjustedById: activeManager?.id || activeManager?.key || "",
+                note: correctionLabel,
+                previousPoints: previousTotalPoints,
+              },
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      correctedQuestionCount += nextQuestionCorrections;
+      correctedTeamCount += 1;
+      totalCorrections += nextQuestionCorrections + (totalChanged ? 1 : 0);
+    });
+
+    if (totalCorrections > 0) {
+      await batch.commit();
+    }
+
+    return {
+      correctedQuestionCount,
+      correctedTeamCount,
+      ok: true,
+      totalCorrections,
+    };
   }
 
   async function ensureLobby(cleanedCode, { deployForToday = false } = {}) {
@@ -3839,9 +3996,20 @@ function App() {
         { merge: true },
       );
 
+      const auditSummary = await auditTeamSessionScores({
+        teamId,
+        reason: "Gesamtpunktestand",
+      });
+      const correctedMessage =
+        auditSummary.totalCorrections > 0
+          ? ` Automatisch korrigiert: ${auditSummary.totalCorrections} Abweichung${
+              auditSummary.totalCorrections === 1 ? "" : "en"
+            }.`
+          : "";
+
       return {
         ok: true,
-        message: `Punktestand fuer ${teamName || currentSession.teamName || teamId} gespeichert.`,
+        message: `Punktestand fuer ${teamName || currentSession.teamName || teamId} gespeichert.${correctedMessage}`,
       };
     } catch (error) {
       console.error("TEAM SCORE UPDATE ERROR:", error);
@@ -3928,9 +4096,20 @@ function App() {
         { merge: true },
       );
 
+      const auditSummary = await auditTeamSessionScores({
+        teamId,
+        reason: questionTitle || questionId,
+      });
+      const correctedMessage =
+        auditSummary.totalCorrections > 0
+          ? ` Automatisch korrigiert: ${auditSummary.totalCorrections} Abweichung${
+              auditSummary.totalCorrections === 1 ? "" : "en"
+            }.`
+          : "";
+
       return {
         ok: true,
-        message: `Frage ${questionTitle || questionId} fuer ${teamName || currentSession.teamName || teamId} gespeichert.`,
+        message: `Frage ${questionTitle || questionId} fuer ${teamName || currentSession.teamName || teamId} gespeichert.${correctedMessage}`,
       };
     } catch (error) {
       console.error("TEAM QUESTION SCORE UPDATE ERROR:", error);
@@ -4016,9 +4195,20 @@ function App() {
         { merge: true },
       );
 
+      const auditSummary = await auditTeamSessionScores({
+        teamId,
+        reason: question.title,
+      });
+      const correctedMessage =
+        auditSummary.totalCorrections > 0
+          ? ` Automatisch korrigiert: ${auditSummary.totalCorrections} Abweichung${
+              auditSummary.totalCorrections === 1 ? "" : "en"
+            }.`
+          : "";
+
       return {
         ok: true,
-        message: `Antwort fuer ${question.title} bei ${teamName || currentSession.teamName || teamId} gespeichert.`,
+        message: `Antwort fuer ${question.title} bei ${teamName || currentSession.teamName || teamId} gespeichert.${correctedMessage}`,
       };
     } catch (error) {
       console.error("MANAGER ANSWER SUBMIT ERROR:", error);
@@ -4100,6 +4290,33 @@ function App() {
           },
           { merge: true },
         );
+      }
+
+      const savedQuiz = {
+        ...payload,
+        id: quizId,
+        quizCode,
+      };
+      const isActiveLobbyQuiz =
+        normalizeQuizCode(sessionData?.lobbyCode || "") === normalizeQuizCode(quizCode);
+
+      if (isActiveLobbyQuiz) {
+        setActivePubQuiz(savedQuiz);
+        const runtimeQuiz = createRuntimeQuizFromPubQuiz(savedQuiz);
+        const auditSummary = await auditTeamSessionScores({
+          lobbyCode: quizCode,
+          quizQuestions: runtimeQuiz.questions,
+          reason: "Quiz-Speicherung",
+        });
+
+        if (auditSummary.totalCorrections > 0) {
+          setQuizManagerMessage(
+            `"${payload.title}" gespeichert. ${auditSummary.correctedTeamCount} Team${
+              auditSummary.correctedTeamCount === 1 ? "" : "s"
+            } und ${auditSummary.totalCorrections} Punkteintraege automatisch korrigiert.`,
+          );
+          return { id: quizId, quizCode };
+        }
       }
 
       setQuizManagerMessage(`"${payload.title}" gespeichert.`);
