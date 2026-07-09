@@ -13008,6 +13008,10 @@ function QuizScreen({
               Die Runde ist freigeschaltet. Startet euren Timer, wenn ihr bereit
               seid.
             </p>
+            <p style={{ color: "#94a3b8" }}>
+              Sobald ihr die erste Antwort eingebt oder auf "Pruefen" klickt,
+              startet der Timer fuer euer Team automatisch.
+            </p>
             <p style={{ color: roundStartWindowExpired ? "#fca5a5" : "#94a3b8" }}>
               {autoStartMs
                 ? `Wenn ihr nicht selbst startet, beginnt der Timer automatisch um ${new Date(
@@ -13037,13 +13041,13 @@ function QuizScreen({
           </div>
         )}
 
-        {roundHasStarted && activeQuestions.length === 0 && (
+        {roundUnlocked && activeQuestions.length === 0 && (
           <p style={{ marginTop: 28, color: "#94a3b8", fontSize: 18 }}>
             Diese Runde hat noch keine Fragen.
           </p>
         )}
 
-        {roundHasStarted &&
+        {roundUnlocked &&
           activeQuestions.map((question, index) => (
             <QuestionCard
               answer={answerDrafts[question.id] ?? ""}
@@ -13052,8 +13056,18 @@ function QuizScreen({
               hintRevealed={Boolean(revealedHints[question.id])}
               isSixthQuestion={index === 5}
               key={question.id}
-              onAnswerChange={(value) => onAnswerChange(question.id, value)}
-              onCheckAnswer={() => onCheckAnswer(question)}
+              onAnswerChange={(value) => {
+                if (!roundHasStarted) {
+                  void onStartTeamRound(activeRound.id);
+                }
+                onAnswerChange(question.id, value);
+              }}
+              onCheckAnswer={() => {
+                if (!roundHasStarted) {
+                  void onStartTeamRound(activeRound.id);
+                }
+                onCheckAnswer(question);
+              }}
               onRevealHint={() =>
                 setPendingHint({
                   questionId: question.id,
