@@ -473,9 +473,25 @@ function readRecentPlayerSession() {
 function saveRecentPlayerSession(session) {
   if (typeof window === "undefined" || !session?.sessionId || !session?.lobbyCode) return;
 
+  const bootstrapSession = {
+    id: session.sessionId,
+    lobbyCode: normalizeQuizCode(session.lobbyCode),
+    managerOnly: false,
+    playerName: session.playerName || "",
+    quizCode: normalizeQuizCode(session.lobbyCode),
+    rankingOptIn: Boolean(session.rankingOptIn),
+    teamId: session.teamId || session.sessionId,
+    teamName: session.teamName || "",
+    teamNameNormalized:
+      session.teamNameNormalized ||
+      normalizeTeamName(session.teamName || session.teamId || session.sessionId || ""),
+    totalPoints: Number(session.totalPoints) || 0,
+  };
+
   window.localStorage.setItem(
     RECENT_PLAYER_SESSION_KEY,
     JSON.stringify({
+      bootstrapSession,
       cachedSession: session.cachedSession || null,
       lobbyCode: normalizeQuizCode(session.lobbyCode),
       playerName: session.playerName || "",
@@ -1956,7 +1972,10 @@ async function createPrintableTeamQuizPdf(draft) {
 function App() {
   const [clientId] = useState(() => getClientId());
   const [recentSessionCandidate] = useState(() => readRecentPlayerSession());
-  const initialCachedSession = recentSessionCandidate?.cachedSession || null;
+  const initialCachedSession =
+    recentSessionCandidate?.bootstrapSession ||
+    recentSessionCandidate?.cachedSession ||
+    null;
   const [activePubQuiz, setActivePubQuiz] = useState(null);
   const runtimeQuiz = useMemo(
     () => createRuntimeQuizFromPubQuiz(activePubQuiz),
@@ -2043,7 +2062,10 @@ function App() {
         playerName: sessionData.playerName,
         rankingOptIn: sessionData.rankingOptIn,
         sessionId,
+        teamId: sessionData.teamId,
         teamName: sessionData.teamName,
+        teamNameNormalized: sessionData.teamNameNormalized,
+        totalPoints: sessionData.totalPoints,
       });
     }
   }, [
@@ -2065,13 +2087,16 @@ function App() {
       return undefined;
     }
 
-    if (recentSession.cachedSession && !sessionData && !sessionId) {
+    const bootstrapSession =
+      recentSession.bootstrapSession || recentSession.cachedSession || null;
+
+    if (bootstrapSession && !sessionData && !sessionId) {
       setLobbyCode(recentSession.lobbyCode);
-      setTeamName(recentSession.cachedSession.teamName || recentSession.teamName || "");
-      setPlayerName(recentSession.cachedSession.playerName || recentSession.playerName || "");
+      setTeamName(bootstrapSession.teamName || recentSession.teamName || "");
+      setPlayerName(bootstrapSession.playerName || recentSession.playerName || "");
       setSessionId(recentSession.sessionId);
       setSessionData({
-        ...recentSession.cachedSession,
+        ...bootstrapSession,
         id: recentSession.sessionId,
         lobbyCode: recentSession.lobbyCode,
       });
@@ -2113,7 +2138,6 @@ function App() {
         setIsRestoringSession(false);
       } catch (error) {
         console.error("RECENT PLAYER SESSION RESTORE ERROR:", error);
-        clearRecentPlayerSession();
         if (!cancelled) setIsRestoringSession(false);
       }
     }
@@ -9443,6 +9467,7 @@ function TeamDirectory({
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [selectedSessionId, setSelectedSessionId] = useState(null);
   const [selectedAnswerRoundId, setSelectedAnswerRoundId] = useState(null);
+  const [selectedTeamHistorySessions, setSelectedTeamHistorySessions] = useState([]);
   const [teamSearch, setTeamSearch] = useState("");
   const [voucherMessage, setVoucherMessage] = useState("");
   const [scoreMessage, setScoreMessage] = useState("");
@@ -9518,7 +9543,13 @@ function TeamDirectory({
     () => visibleTeams.find((team) => team.id === selectedTeamId) || visibleTeams[0],
     [selectedTeamId, visibleTeams],
   );
-  const selectedSessions = useMemo(() => selectedTeam?.sessions || [], [selectedTeam]);
+  const selectedSessions = useMemo(
+    () =>
+      selectedTeamHistorySessions.length > 0
+        ? selectedTeamHistorySessions
+        : selectedTeam?.sessions || [],
+    [selectedTeam?.sessions, selectedTeamHistorySessions],
+  );
   const selectedTeamVouchers = useMemo(
     () =>
       buildVoucherEntries(selectedSessions, allVoucherDocs, pubQuizzes, {
@@ -9582,6 +9613,58 @@ function TeamDirectory({
       setSelectedSessionId(null);
     }
   }, [selectedTeamId, visibleTeams]);
+
+  useEffect(() => {
+    if (!selectedTeam?.id) {
+      setSelectedTeamHistorySessions([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadSelectedTeamHistory() {
+      try {
+        const eventsSnapshot = await getDocs(collection(db, "quizEvents"));
+        const sessionSnapshots = await Promise.all(
+          eventsSnapshot.docs.map((eventDoc) =>
+            getDoc(doc(db, "quizEvents", eventDoc.id, "teamSessions", selectedTeam.id)),
+          ),
+        );
+
+        if (cancelled) return;
+
+        const sessions = sessionSnapshots
+          .filter((snapshot) => snapshot.exists())
+          .map((snapshot) => {
+            const data = snapshot.data();
+
+            return {
+              id: snapshot.id,
+              sessionKey: `${data.eventId || "event"}__${snapshot.id}`,
+              ...data,
+            };
+          })
+          .sort((a, b) => {
+            const timeDifference =
+              getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a));
+            return timeDifference || (a.teamName || "").localeCompare(b.teamName || "");
+          });
+
+        setSelectedTeamHistorySessions(sessions);
+      } catch (error) {
+        console.error("TEAM DIRECTORY HISTORY LOAD ERROR:", error);
+        if (!cancelled) {
+          setSelectedTeamHistorySessions(selectedTeam?.sessions || []);
+        }
+      }
+    }
+
+    loadSelectedTeamHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedTeam?.id]);
 
   useEffect(() => {
     setSelectedAnswerRoundId(selectedQuizQuestionsByRound[0]?.id || null);
