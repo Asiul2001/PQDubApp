@@ -1627,10 +1627,24 @@ function createRuntimeQuizFromPubQuiz(pubQuiz) {
   }
 
   const nextQuestions = {};
+  const usedQuestionIds = new Set();
   const nextRounds = (pubQuiz.rounds || []).map((round, roundIndex) => {
     const roundId = round.id || `round${roundIndex + 1}`;
     const questionIds = (round.questions || []).map((question, questionIndex) => {
-      const questionId = question.id || `${roundId}q${questionIndex + 1}`;
+      const preferredQuestionId = question.id || `${roundId}q${questionIndex + 1}`;
+      let questionId = preferredQuestionId;
+
+      if (usedQuestionIds.has(questionId)) {
+        questionId = `${roundId}q${questionIndex + 1}`;
+      }
+
+      let duplicateCounter = 2;
+      while (usedQuestionIds.has(questionId)) {
+        questionId = `${roundId}q${questionIndex + 1}_${duplicateCounter}`;
+        duplicateCounter += 1;
+      }
+
+      usedQuestionIds.add(questionId);
       const acceptedAnswers = Array.isArray(question.acceptedAnswers)
         ? question.acceptedAnswers
         : String(question.answersText || "")
@@ -13056,18 +13070,8 @@ function QuizScreen({
               hintRevealed={Boolean(revealedHints[question.id])}
               isSixthQuestion={index === 5}
               key={question.id}
-              onAnswerChange={(value) => {
-                if (!roundHasStarted) {
-                  void onStartTeamRound(activeRound.id);
-                }
-                onAnswerChange(question.id, value);
-              }}
-              onCheckAnswer={() => {
-                if (!roundHasStarted) {
-                  void onStartTeamRound(activeRound.id);
-                }
-                onCheckAnswer(question);
-              }}
+              onAnswerChange={(value) => onAnswerChange(question.id, value)}
+              onCheckAnswer={() => onCheckAnswer(question)}
               onRevealHint={() =>
                 setPendingHint({
                   questionId: question.id,
