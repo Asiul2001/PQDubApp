@@ -96,6 +96,7 @@ const ANSWER_WINDOW_MS = 5 * 60 * 60 * 1000;
 const ROUND_START_WINDOW_MS = DEFAULT_ROUND_START_WINDOW_MS;
 const EMERGENCY_JOIN_WINDOW_MS = 5 * 60 * 1000;
 const HIDDEN_YEARLY_RANKING_TEAM_IDS = new Set(["asiul"]);
+const RECENT_MANAGER_SESSION_KEY = "pqRecentManagerSession";
 const RECENT_PLAYER_SESSION_KEY = "pqRecentPlayerSession";
 const RECENT_PLAYER_SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -506,6 +507,60 @@ function saveRecentPlayerSession(session) {
 function clearRecentPlayerSession() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(RECENT_PLAYER_SESSION_KEY);
+}
+
+function readRecentManagerSession() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const rawValue = window.localStorage.getItem(RECENT_MANAGER_SESSION_KEY);
+
+    if (!rawValue) return null;
+
+    const parsed = JSON.parse(rawValue);
+    const savedAt = Number(parsed?.savedAt);
+
+    if (
+      !parsed ||
+      !parsed.manager?.id ||
+      !Number.isFinite(savedAt) ||
+      Date.now() - savedAt > RECENT_PLAYER_SESSION_MAX_AGE_MS
+    ) {
+      window.localStorage.removeItem(RECENT_MANAGER_SESSION_KEY);
+      return null;
+    }
+
+    return parsed;
+  } catch (error) {
+    console.warn("RECENT MANAGER SESSION READ ERROR:", error);
+    window.localStorage.removeItem(RECENT_MANAGER_SESSION_KEY);
+    return null;
+  }
+}
+
+function saveRecentManagerSession({ lobbyCode = "", manager }) {
+  if (typeof window === "undefined" || !manager?.id) return;
+
+  window.localStorage.setItem(
+    RECENT_MANAGER_SESSION_KEY,
+    JSON.stringify({
+      lobbyCode: normalizeQuizCode(lobbyCode || ""),
+      manager: {
+        active: manager.active !== false,
+        canEditScores: Boolean(manager.canEditScores ?? manager.headManager),
+        headManager: Boolean(manager.headManager),
+        id: manager.id,
+        key: manager.key || manager.id,
+        name: manager.name || manager.id,
+      },
+      savedAt: Date.now(),
+    }),
+  );
+}
+
+function clearRecentManagerSession() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(RECENT_MANAGER_SESSION_KEY);
 }
 
 function formatStopwatch(ms) {
@@ -1971,6 +2026,7 @@ async function createPrintableTeamQuizPdf(draft) {
 
 function App() {
   const [clientId] = useState(() => getClientId());
+  const [recentManagerCandidate] = useState(() => readRecentManagerSession());
   const [recentSessionCandidate] = useState(() => readRecentPlayerSession());
   const initialCachedSession =
     recentSessionCandidate?.bootstrapSession ||
@@ -1987,7 +2043,11 @@ function App() {
   const activeRound =
     quizRounds.find((round) => round.id === activeRoundId) || quizRounds[0];
   const [lobbyCode, setLobbyCode] = useState(
-    () => getInitialQuizCode() || recentSessionCandidate?.lobbyCode || "",
+    () =>
+      getInitialQuizCode() ||
+      recentManagerCandidate?.lobbyCode ||
+      recentSessionCandidate?.lobbyCode ||
+      "",
   );
   const [teamName, setTeamName] = useState(
     () => initialCachedSession?.teamName || recentSessionCandidate?.teamName || "",
@@ -1995,7 +2055,7 @@ function App() {
   const [playerName, setPlayerName] = useState(
     () => initialCachedSession?.playerName || recentSessionCandidate?.playerName || "",
   );
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(() => Boolean(recentManagerCandidate?.manager));
   const [entryMode, setEntryMode] = useState(() =>
     recentSessionCandidate ? "known" : "picker",
   );
@@ -2003,11 +2063,22 @@ function App() {
   const [managerKey, setManagerKey] = useState("");
   const [managerPassword, setManagerPassword] = useState("");
   const [teamPassword, setTeamPassword] = useState("");
-  const [activeManager, setActiveManager] = useState(null);
+  const [activeManager, setActiveManager] = useState(() => recentManagerCandidate?.manager || null);
   const [message, setMessage] = useState("");
   const [sessionId, setSessionId] = useState(() => recentSessionCandidate?.sessionId || null);
   const [sessionData, setSessionData] = useState(() =>
-    initialCachedSession
+    recentManagerCandidate?.manager
+      ? {
+          lobbyCode: recentManagerCandidate.lobbyCode || "",
+          managerOnly: true,
+          playerName:
+            recentManagerCandidate.manager.name || recentManagerCandidate.manager.id,
+          rankingOptIn: false,
+          teamName:
+            recentManagerCandidate.manager.name || recentManagerCandidate.manager.id,
+          totalPoints: 0,
+        }
+      : initialCachedSession
       ? {
           ...initialCachedSession,
           id: recentSessionCandidate?.sessionId || initialCachedSession.id,
@@ -2076,6 +2147,20 @@ function App() {
     sessionData?.teamName,
     sessionId,
   ]);
+
+  useEffect(() => {
+    if (isAdmin && activeManager) {
+      saveRecentManagerSession({
+        lobbyCode: sessionData?.lobbyCode || lobbyCode,
+        manager: activeManager,
+      });
+      return;
+    }
+
+    if (!isAdmin) {
+      clearRecentManagerSession();
+    }
+  }, [activeManager, isAdmin, lobbyCode, sessionData?.lobbyCode]);
 
   useEffect(() => {
     if (activeManager || sessionData?.managerOnly) return undefined;
@@ -3287,6 +3372,10 @@ function App() {
         teamName: validatedManager.name || validatedManager.id,
         totalPoints: 0,
       });
+      saveRecentManagerSession({
+        lobbyCode: "",
+        manager: validatedManager,
+      });
       setSessionId(null);
       setAppView("admin");
       setMessage(`Willkommen, ${validatedManager.name || validatedManager.id}.`);
@@ -3410,10 +3499,15 @@ function App() {
           });
         }
 
-        setActiveManager(validatedManager);
-      } else {
-        setActiveManager(null);
-      }
+      setActiveManager(validatedManager);
+      saveRecentManagerSession({
+        lobbyCode: cleanedCode,
+        manager: validatedManager,
+      });
+    } else {
+      setActiveManager(null);
+      clearRecentManagerSession();
+    }
 
       setActivePubQuiz(selectedPubQuiz);
       setActiveRoundId(
@@ -5562,13 +5656,19 @@ function App() {
         onCloseIssuedTeamPassword={() => setIssuedTeamPassword(null)}
         onAdminChange={(nextIsAdmin) => {
           setIsAdmin(nextIsAdmin);
-          if (!nextIsAdmin) setActiveManager(null);
+          if (!nextIsAdmin) {
+            setActiveManager(null);
+            clearRecentManagerSession();
+          }
         }}
         onEntryModeChange={(nextMode) => {
           setEntryMode(nextMode);
           const nextIsAdmin = nextMode === "manager";
           setIsAdmin(nextIsAdmin);
-          if (!nextIsAdmin) setActiveManager(null);
+          if (!nextIsAdmin) {
+            setActiveManager(null);
+            clearRecentManagerSession();
+          }
           setMessage("");
         }}
         onKnownTeamModeChange={setKnownTeamMode}
@@ -9624,19 +9724,21 @@ function TeamDirectory({
 
     async function loadSelectedTeamHistory() {
       try {
-        const eventsSnapshot = await getDocs(collection(db, "quizEvents"));
-        const sessionSnapshots = await Promise.all(
-          eventsSnapshot.docs.map((eventDoc) =>
-            getDoc(doc(db, "quizEvents", eventDoc.id, "teamSessions", selectedTeam.id)),
-          ),
-        );
+        const normalizedTeamId = selectedTeam.teamNameNormalized || selectedTeam.id;
+        const sessionsSnapshot = await getDocs(collectionGroup(db, "teamSessions"));
 
         if (cancelled) return;
 
-        const sessions = sessionSnapshots
-          .filter((snapshot) => snapshot.exists())
+        const sessions = sessionsSnapshot.docs
           .map((snapshot) => {
             const data = snapshot.data();
+            const sessionTeamKey =
+              data.teamNameNormalized ||
+              data.teamId ||
+              normalizeTeamName(data.teamName || "");
+
+            if (data.quizId !== latestQuizId) return null;
+            if (sessionTeamKey !== normalizedTeamId) return null;
 
             return {
               id: snapshot.id,
@@ -9644,6 +9746,7 @@ function TeamDirectory({
               ...data,
             };
           })
+          .filter(Boolean)
           .sort((a, b) => {
             const timeDifference =
               getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a));
