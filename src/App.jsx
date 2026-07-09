@@ -402,6 +402,10 @@ function canManageManagerRecords(activeManager, managers) {
   return !managers.some((manager) => manager.headManager);
 }
 
+function canManagerEditScores(activeManager) {
+  return Boolean(activeManager?.canEditScores || activeManager?.headManager);
+}
+
 function useIsNarrowScreen(breakpoint = 760) {
   const [isNarrow, setIsNarrow] = useState(() =>
     typeof window === "undefined" ? false : window.innerWidth <= breakpoint,
@@ -3957,7 +3961,7 @@ function App() {
     teamId,
     teamName,
   }) {
-    if (!activeManager?.canEditScores || !sessionData?.lobbyCode || !teamId) {
+    if (!canManagerEditScores(activeManager) || !sessionData?.lobbyCode || !teamId) {
       return { ok: false, message: "Dieser Manager darf keine Punkte korrigieren." };
     }
 
@@ -4025,7 +4029,7 @@ function App() {
     teamId,
     teamName,
   }) {
-    if (!activeManager?.canEditScores || !sessionData?.lobbyCode || !teamId || !questionId) {
+    if (!canManagerEditScores(activeManager) || !sessionData?.lobbyCode || !teamId || !questionId) {
       return { ok: false, message: "Dieser Manager darf keine Fragen korrigieren." };
     }
 
@@ -4127,7 +4131,7 @@ function App() {
     teamId,
     teamName,
   }) {
-    if (!activeManager?.canEditScores || !sessionData?.lobbyCode || !teamId || !question?.id) {
+    if (!canManagerEditScores(activeManager) || !sessionData?.lobbyCode || !teamId || !question?.id) {
       return { ok: false, message: "Manager-Antwort konnte nicht gespeichert werden." };
     }
 
@@ -10044,7 +10048,7 @@ function LiveControlPanel({
     visibleTeamStatuses[0] ||
     null;
   const selectedQuestionIds = selectedQuestions.map((question) => question.id);
-  const canEditScores = Boolean(activeManager?.canEditScores && onUpdateTeamScore);
+  const canEditScores = Boolean(canManagerEditScores(activeManager) && onUpdateTeamScore);
 
   useEffect(() => {
     if (!visibleTeamStatuses.some((team) => team.id === selectedTeamId)) {
