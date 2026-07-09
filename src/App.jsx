@@ -1930,6 +1930,7 @@ async function createPrintableTeamQuizPdf(draft) {
 
 function App() {
   const [clientId] = useState(() => getClientId());
+  const [recentSessionCandidate] = useState(() => readRecentPlayerSession());
   const [activePubQuiz, setActivePubQuiz] = useState(null);
   const runtimeQuiz = useMemo(
     () => createRuntimeQuizFromPubQuiz(activePubQuiz),
@@ -1971,6 +1972,9 @@ function App() {
   const [pendingTeamCreate, setPendingTeamCreate] = useState(null);
   const [appView, setAppView] = useState("main");
   const [adminTab, setAdminTab] = useState("live");
+  const [isRestoringSession, setIsRestoringSession] = useState(() =>
+    Boolean(recentSessionCandidate),
+  );
   const [pointToast, setPointToast] = useState(null);
   const [pubQuizzes, setPubQuizzes] = useState([]);
   const [quizManagerMessage, setQuizManagerMessage] = useState("");
@@ -2007,9 +2011,12 @@ function App() {
   useEffect(() => {
     if (activeManager || sessionId || sessionData?.managerOnly) return undefined;
 
-    const recentSession = readRecentPlayerSession();
+    const recentSession = recentSessionCandidate || readRecentPlayerSession();
 
-    if (!recentSession) return undefined;
+    if (!recentSession) {
+      setIsRestoringSession(false);
+      return undefined;
+    }
 
     let cancelled = false;
 
@@ -2020,12 +2027,16 @@ function App() {
 
         if (!sessionSnapshot.exists()) {
           clearRecentPlayerSession();
+          if (!cancelled) setIsRestoringSession(false);
           return;
         }
 
         const restoredSession = sessionSnapshot.data();
 
-        if (cancelled || restoredSession?.managerOnly) return;
+        if (cancelled || restoredSession?.managerOnly) {
+          if (!cancelled) setIsRestoringSession(false);
+          return;
+        }
 
         setLobbyCode(recentSession.lobbyCode);
         setTeamName(restoredSession.teamName || recentSession.teamName || "");
@@ -2038,9 +2049,11 @@ function App() {
         });
         setEntryMode("known");
         setAppView("main");
+        setIsRestoringSession(false);
       } catch (error) {
         console.error("RECENT PLAYER SESSION RESTORE ERROR:", error);
         clearRecentPlayerSession();
+        if (!cancelled) setIsRestoringSession(false);
       }
     }
 
@@ -5411,6 +5424,31 @@ function App() {
         message: `Gutscheine konnten nicht erstellt werden: ${error.message}`,
       };
     }
+  }
+
+  if (!sessionData && isRestoringSession) {
+    return (
+      <main style={pageStyle}>
+        <section
+          style={{
+            width: "min(100%, 520px)",
+            margin: "80px auto",
+            padding: 28,
+            borderRadius: 24,
+            border: "1px solid #1f2937",
+            background: "#111827",
+            textAlign: "center",
+          }}
+        >
+          <p style={{ margin: 0, color: "#93c5fd", fontWeight: 700 }}>
+            Letzte Sitzung wird wiederhergestellt...
+          </p>
+          <p style={{ margin: "12px 0 0", color: "#94a3b8" }}>
+            Wir pruefen euren Teamzugang fuer die letzten 24 Stunden.
+          </p>
+        </section>
+      </main>
+    );
   }
 
   if (!sessionData) {
@@ -9547,11 +9585,8 @@ function TeamDirectory({
   }, [
     selectedQuestionRound?.id,
     selectedQuizQuestions,
-    selectedSession?.answers,
     selectedSession?.id,
     selectedSession?.sessionKey,
-    selectedSession?.scoreAdjustment?.note,
-    selectedSession?.totalPoints,
   ]);
 
   async function handleScoreSave() {
@@ -10601,10 +10636,7 @@ function LiveControlPanel({
     hydratedLiveTeamIdRef.current = selectedTeam.id;
   }, [
     selectedQuestions,
-    selectedTeam?.answers,
     selectedTeam?.id,
-    selectedTeam?.scoreAdjustment?.note,
-    selectedTeam?.totalPoints,
   ]);
 
   async function handleScoreSave() {
