@@ -1956,6 +1956,7 @@ async function createPrintableTeamQuizPdf(draft) {
 function App() {
   const [clientId] = useState(() => getClientId());
   const [recentSessionCandidate] = useState(() => readRecentPlayerSession());
+  const initialCachedSession = recentSessionCandidate?.cachedSession || null;
   const [activePubQuiz, setActivePubQuiz] = useState(null);
   const runtimeQuiz = useMemo(
     () => createRuntimeQuizFromPubQuiz(activePubQuiz),
@@ -1966,19 +1967,36 @@ function App() {
   const [activeRoundId, setActiveRoundId] = useState(defaultQuizRounds[0].id);
   const activeRound =
     quizRounds.find((round) => round.id === activeRoundId) || quizRounds[0];
-  const [lobbyCode, setLobbyCode] = useState(() => getInitialQuizCode());
-  const [teamName, setTeamName] = useState("");
-  const [playerName, setPlayerName] = useState("");
+  const [lobbyCode, setLobbyCode] = useState(
+    () => getInitialQuizCode() || recentSessionCandidate?.lobbyCode || "",
+  );
+  const [teamName, setTeamName] = useState(
+    () => initialCachedSession?.teamName || recentSessionCandidate?.teamName || "",
+  );
+  const [playerName, setPlayerName] = useState(
+    () => initialCachedSession?.playerName || recentSessionCandidate?.playerName || "",
+  );
   const [isAdmin, setIsAdmin] = useState(false);
-  const [entryMode, setEntryMode] = useState("picker");
+  const [entryMode, setEntryMode] = useState(() =>
+    recentSessionCandidate ? "known" : "picker",
+  );
   const [knownTeamMode, setKnownTeamMode] = useState("registered");
   const [managerKey, setManagerKey] = useState("");
   const [managerPassword, setManagerPassword] = useState("");
   const [teamPassword, setTeamPassword] = useState("");
   const [activeManager, setActiveManager] = useState(null);
   const [message, setMessage] = useState("");
-  const [sessionId, setSessionId] = useState(null);
-  const [sessionData, setSessionData] = useState(null);
+  const [sessionId, setSessionId] = useState(() => recentSessionCandidate?.sessionId || null);
+  const [sessionData, setSessionData] = useState(() =>
+    initialCachedSession
+      ? {
+          ...initialCachedSession,
+          id: recentSessionCandidate?.sessionId || initialCachedSession.id,
+          lobbyCode:
+            initialCachedSession.lobbyCode || recentSessionCandidate?.lobbyCode || "",
+        }
+      : null,
+  );
   const [lobbyData, setLobbyData] = useState(null);
   const [registeredTeams, setRegisteredTeams] = useState([]);
   const [allTeams, setAllTeams] = useState([]);
@@ -2038,7 +2056,7 @@ function App() {
   ]);
 
   useEffect(() => {
-    if (activeManager || sessionId || sessionData?.managerOnly) return undefined;
+    if (activeManager || sessionData?.managerOnly) return undefined;
 
     const recentSession = recentSessionCandidate || readRecentPlayerSession();
 
@@ -9429,6 +9447,7 @@ function TeamDirectory({
   const [voucherMessage, setVoucherMessage] = useState("");
   const [scoreMessage, setScoreMessage] = useState("");
   const [questionMessages, setQuestionMessages] = useState({});
+  const [editingSession, setEditingSession] = useState(null);
   const scoreInputRef = useRef(null);
   const scoreNoteInputRef = useRef(null);
   const questionAnswerInputRefs = useRef({});
@@ -9513,9 +9532,12 @@ function TeamDirectory({
       selectedSessions[0],
     [selectedSessionId, selectedSessions],
   );
+  const selectedSessionKey = selectedSession?.sessionKey || selectedSession?.id || "";
+  const editingSessionKey = editingSession?.sessionKey || editingSession?.id || "";
+  const activeSession = editingSessionKey === selectedSessionKey ? editingSession : selectedSession;
   const selectedPubQuiz = useMemo(
-    () => findPubQuizForSession(selectedSession, pubQuizzes),
-    [pubQuizzes, selectedSession],
+    () => findPubQuizForSession(activeSession, pubQuizzes),
+    [activeSession, pubQuizzes],
   );
   const selectedQuiz = useMemo(
     () => createRuntimeQuizFromPubQuiz(selectedPubQuiz),
@@ -9563,71 +9585,142 @@ function TeamDirectory({
 
   useEffect(() => {
     setSelectedAnswerRoundId(selectedQuizQuestionsByRound[0]?.id || null);
-  }, [selectedSession?.id, selectedPubQuiz?.id]);
+  }, [activeSession?.id, selectedPubQuiz?.id]);
 
   useEffect(() => {
     if (!selectedSession) {
+      setEditingSession(null);
       setScoreMessage("");
       setQuestionMessages({});
       return;
     }
+    setEditingSession({
+      ...selectedSession,
+      answers: { ...(selectedSession.answers || {}) },
+    });
     setScoreMessage("");
     setQuestionMessages({});
-  }, [selectedQuestionRound?.id, selectedSession?.id, selectedSession?.sessionKey]);
+  }, [selectedSessionKey]);
+
+  useEffect(() => {
+    setScoreMessage("");
+    setQuestionMessages({});
+  }, [selectedQuestionRound?.id, selectedSessionKey]);
 
   async function handleScoreSave() {
-    if (!selectedTeam || !selectedSession || !canEditScores) return;
+    if (!selectedTeam || !activeSession || !canEditScores) return;
 
     const result = await onUpdateTeamScore({
-      lobbyCode: selectedSession.lobbyCode || selectedSession.quizCode,
+      lobbyCode: activeSession.lobbyCode || activeSession.quizCode,
       nextTotalPoints: scoreInputRef.current?.value ?? "0",
       note: scoreNoteInputRef.current?.value ?? "",
-      teamId: selectedSession.teamId || selectedSession.id,
-      teamName: selectedSession.teamName || selectedTeam.teamName,
+      teamId: activeSession.teamId || activeSession.id,
+      teamName: activeSession.teamName || selectedTeam.teamName,
     });
 
     setScoreMessage(result.message);
+    if (result.ok) {
+      setEditingSession((currentSession) =>
+        currentSession
+          ? {
+              ...currentSession,
+              scoreAdjustment: {
+                ...(currentSession.scoreAdjustment || {}),
+                note: scoreNoteInputRef.current?.value ?? "",
+              },
+              totalPoints: Number(scoreInputRef.current?.value ?? currentSession.totalPoints ?? 0),
+            }
+          : currentSession,
+      );
+    }
   }
 
   async function handleQuestionScoreSave(question) {
-    if (!selectedTeam || !selectedSession || !canEditScores || !onUpdateTeamQuestionScore) {
+    if (!selectedTeam || !activeSession || !canEditScores || !onUpdateTeamQuestionScore) {
       return;
     }
 
     const result = await onUpdateTeamQuestionScore({
-      lobbyCode: selectedSession.lobbyCode || selectedSession.quizCode,
+      lobbyCode: activeSession.lobbyCode || activeSession.quizCode,
       nextPointsAwarded: questionScoreInputRefs.current[question.id]?.value ?? "0",
       note: questionNoteInputRefs.current[question.id]?.value ?? "",
       questionId: question.id,
       questionTitle: question.title,
-      teamId: selectedSession.teamId || selectedSession.id,
-      teamName: selectedSession.teamName || selectedTeam.teamName,
+      teamId: activeSession.teamId || activeSession.id,
+      teamName: activeSession.teamName || selectedTeam.teamName,
     });
 
     setQuestionMessages((current) => ({
       ...current,
       [question.id]: result.message,
     }));
+    if (result.ok) {
+      setEditingSession((currentSession) => {
+        if (!currentSession) return currentSession;
+        const currentAnswers = currentSession.answers || {};
+
+        return {
+          ...currentSession,
+          answers: {
+            ...currentAnswers,
+            [question.id]: {
+              ...(currentAnswers[question.id] || {}),
+              pointsAwarded: Number(
+                questionScoreInputRefs.current[question.id]?.value ??
+                  currentAnswers[question.id]?.pointsAwarded ??
+                  0,
+              ),
+              manualOverride: {
+                ...(currentAnswers[question.id]?.manualOverride || {}),
+                note: questionNoteInputRefs.current[question.id]?.value ?? "",
+              },
+            },
+          },
+        };
+      });
+    }
   }
 
   async function handleManagerAnswerSave(question) {
-    if (!selectedTeam || !selectedSession || !canEditScores || !onSubmitManagerAnswerForTeam) {
+    if (!selectedTeam || !activeSession || !canEditScores || !onSubmitManagerAnswerForTeam) {
       return;
     }
 
     const result = await onSubmitManagerAnswerForTeam({
       answerText: questionAnswerInputRefs.current[question.id]?.value ?? "",
-      lobbyCode: selectedSession.lobbyCode || selectedSession.quizCode,
+      lobbyCode: activeSession.lobbyCode || activeSession.quizCode,
       note: questionNoteInputRefs.current[question.id]?.value ?? "",
       question,
-      teamId: selectedSession.teamId || selectedSession.id,
-      teamName: selectedSession.teamName || selectedTeam.teamName,
+      teamId: activeSession.teamId || activeSession.id,
+      teamName: activeSession.teamName || selectedTeam.teamName,
     });
 
     setQuestionMessages((current) => ({
       ...current,
       [question.id]: result.message,
     }));
+    if (result.ok) {
+      setEditingSession((currentSession) => {
+        if (!currentSession) return currentSession;
+        const currentAnswers = currentSession.answers || {};
+
+        return {
+          ...currentSession,
+          answers: {
+            ...currentAnswers,
+            [question.id]: {
+              ...(currentAnswers[question.id] || {}),
+              managerOverride: {
+                ...(currentAnswers[question.id]?.managerOverride || {}),
+                active: true,
+                note: questionNoteInputRefs.current[question.id]?.value ?? "",
+              },
+              text: questionAnswerInputRefs.current[question.id]?.value ?? "",
+            },
+          },
+        };
+      });
+    }
   }
 
   return (
@@ -9889,7 +9982,7 @@ function TeamDirectory({
               )}
             </div>
 
-            {selectedSession && (
+            {activeSession && (
               <>
                 <h4>Teilnahme-Details</h4>
                 <div
@@ -9910,7 +10003,7 @@ function TeamDirectory({
                   >
                     <strong style={{ display: "block", marginBottom: 6 }}>Quiz</strong>
                     <span style={{ color: "#cbd5e1" }}>
-                      {getQuizLabelForSession(selectedSession, pubQuizzes)}
+                      {getQuizLabelForSession(activeSession, pubQuizzes)}
                     </span>
                   </div>
                   <div
@@ -9923,7 +10016,7 @@ function TeamDirectory({
                   >
                     <strong style={{ display: "block", marginBottom: 6 }}>Ranking</strong>
                     <span style={{ color: "#cbd5e1" }}>
-                      {selectedSession.rankingOptIn ? "Globales Ranking" : "Nur heute"}
+                      {activeSession.rankingOptIn ? "Globales Ranking" : "Nur heute"}
                     </span>
                   </div>
                   <div
@@ -9935,8 +10028,8 @@ function TeamDirectory({
                     }}
                   >
                     <strong style={{ display: "block", marginBottom: 6 }}>Punkte</strong>
-                    <span style={{ color: "#cbd5e1" }}>{selectedSession.totalPoints || 0}</span>
-                    {selectedSession.scoreAdjustment?.active && (
+                    <span style={{ color: "#cbd5e1" }}>{activeSession.totalPoints || 0}</span>
+                    {activeSession.scoreAdjustment?.active && (
                       <span style={{ display: "block", marginTop: 6, color: "#fbbf24", fontWeight: 700 }}>
                         manuell geaendert
                       </span>
@@ -9952,7 +10045,7 @@ function TeamDirectory({
                   >
                     <strong style={{ display: "block", marginBottom: 6 }}>Tagesplatz</strong>
                     <span style={{ color: "#cbd5e1" }}>
-                      {selectedSession.rankDaily ? `${selectedSession.rankDaily}. Platz` : "nicht gespeichert"}
+                      {activeSession.rankDaily ? `${activeSession.rankDaily}. Platz` : "nicht gespeichert"}
                     </span>
                   </div>
                   <div
@@ -9968,8 +10061,8 @@ function TeamDirectory({
                       {Array.from(
                         new Set(
                           [
-                            ...(selectedSession.playerNames || []),
-                            selectedSession.playerName,
+                            ...(activeSession.playerNames || []),
+                            activeSession.playerName,
                           ].filter(Boolean),
                         ),
                       ).join(", ") || "keine Namen gespeichert"}
@@ -9977,7 +10070,7 @@ function TeamDirectory({
                   </div>
                 </div>
 
-                {selectedSession.scoreAdjustment?.active && (
+                {activeSession.scoreAdjustment?.active && (
                   <div
                     style={{
                       marginBottom: 16,
@@ -9992,14 +10085,14 @@ function TeamDirectory({
                       Punkte wurden manuell angepasst
                     </strong>
                     <span>
-                      Von {selectedSession.scoreAdjustment.adjustedBy || "Manager"}
-                      {selectedSession.scoreAdjustment.previousPoints !== undefined
-                        ? ` (${selectedSession.scoreAdjustment.previousPoints} -> ${selectedSession.totalPoints || 0})`
+                      Von {activeSession.scoreAdjustment.adjustedBy || "Manager"}
+                      {activeSession.scoreAdjustment.previousPoints !== undefined
+                        ? ` (${activeSession.scoreAdjustment.previousPoints} -> ${activeSession.totalPoints || 0})`
                         : ""}
                     </span>
-                    {selectedSession.scoreAdjustment.note && (
+                    {activeSession.scoreAdjustment.note && (
                       <span style={{ display: "block", marginTop: 6 }}>
-                        Notiz: {selectedSession.scoreAdjustment.note}
+                        Notiz: {activeSession.scoreAdjustment.note}
                       </span>
                     )}
                   </div>
@@ -10021,8 +10114,8 @@ function TeamDirectory({
                     <label style={{ display: "grid", gap: 6 }}>
                       <span style={{ color: "#cbd5e1" }}>Neuer Gesamtpunktestand</span>
                       <input
-                        key={`score__${selectedSession.sessionKey || selectedSession.id}`}
-                        defaultValue={String(Number(selectedSession.totalPoints) || 0)}
+                        key={`score__${activeSession.sessionKey || activeSession.id}`}
+                        defaultValue={String(Number(activeSession.totalPoints) || 0)}
                         ref={scoreInputRef}
                         inputMode="numeric"
                         style={inputStyle}
@@ -10031,8 +10124,8 @@ function TeamDirectory({
                     <label style={{ display: "grid", gap: 6 }}>
                       <span style={{ color: "#cbd5e1" }}>Notiz fuer Manager</span>
                       <input
-                        key={`score-note__${selectedSession.sessionKey || selectedSession.id}`}
-                        defaultValue={selectedSession.scoreAdjustment?.note || ""}
+                        key={`score-note__${activeSession.sessionKey || activeSession.id}`}
+                        defaultValue={activeSession.scoreAdjustment?.note || ""}
                         ref={scoreNoteInputRef}
                         placeholder="z. B. Bewertungsfehler bei Frage 4"
                         style={inputStyle}
@@ -10084,9 +10177,9 @@ function TeamDirectory({
                     <p style={{ margin: "0 0 6px", color: "#cbd5e1" }}>
                       Team-Antwort:{" "}
                       <strong>
-                        {selectedSession.tiebreaker?.estimate ??
-                          selectedSession.tiebreakerEstimate ??
-                          selectedSession.tiebreakerGuess ??
+                        {activeSession.tiebreaker?.estimate ??
+                          activeSession.tiebreakerEstimate ??
+                          activeSession.tiebreakerGuess ??
                           "nicht gespeichert"}
                       </strong>
                     </p>
@@ -10103,8 +10196,8 @@ function TeamDirectory({
 
                 <h4>Antworten</h4>
                 <p style={{ color: "#94a3b8" }}>
-                  {getQuizLabelForSession(selectedSession, pubQuizzes)} -{" "}
-                  {formatCompletionDate(getCompletionValue(selectedSession))}
+                  {getQuizLabelForSession(activeSession, pubQuizzes)} -{" "}
+                  {formatCompletionDate(getCompletionValue(activeSession))}
                 </p>
                 {selectedQuizQuestionsByRound.length > 0 && (
                   <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
@@ -10151,7 +10244,7 @@ function TeamDirectory({
                     </p>
                   ) : (
                     selectedQuizQuestions.map((question) => {
-                      const answer = selectedSession.answers?.[question.id];
+                      const answer = activeSession.answers?.[question.id];
 
                       return (
                         <article
@@ -10214,8 +10307,8 @@ function TeamDirectory({
                                   Antwort fuer diese Frage
                                 </span>
                                 <input
-                                  key={`answer__${selectedSession.sessionKey || selectedSession.id}__${selectedQuestionRound?.id || "round"}__${question.id}`}
-                                  defaultValue={selectedSession.answers?.[question.id]?.text || ""}
+                                  key={`answer__${activeSession.sessionKey || activeSession.id}__${selectedQuestionRound?.id || "round"}__${question.id}`}
+                                  defaultValue={activeSession.answers?.[question.id]?.text || ""}
                                   ref={(node) => {
                                     if (node) {
                                       questionAnswerInputRefs.current[question.id] = node;
@@ -10232,8 +10325,8 @@ function TeamDirectory({
                                   Punkte fuer diese Frage
                                 </span>
                                 <input
-                                  key={`points__${selectedSession.sessionKey || selectedSession.id}__${selectedQuestionRound?.id || "round"}__${question.id}`}
-                                  defaultValue={String(Number(selectedSession.answers?.[question.id]?.pointsAwarded) || 0)}
+                                  key={`points__${activeSession.sessionKey || activeSession.id}__${selectedQuestionRound?.id || "round"}__${question.id}`}
+                                  defaultValue={String(Number(activeSession.answers?.[question.id]?.pointsAwarded) || 0)}
                                   ref={(node) => {
                                     if (node) {
                                       questionScoreInputRefs.current[question.id] = node;
@@ -10248,10 +10341,10 @@ function TeamDirectory({
                               <label style={{ display: "grid", gap: 6 }}>
                                 <span style={{ color: "#cbd5e1" }}>Notiz</span>
                                 <input
-                                  key={`note__${selectedSession.sessionKey || selectedSession.id}__${selectedQuestionRound?.id || "round"}__${question.id}`}
+                                  key={`note__${activeSession.sessionKey || activeSession.id}__${selectedQuestionRound?.id || "round"}__${question.id}`}
                                   defaultValue={
-                                    selectedSession.answers?.[question.id]?.manualOverride?.note ||
-                                    selectedSession.answers?.[question.id]?.managerOverride?.note ||
+                                    activeSession.answers?.[question.id]?.manualOverride?.note ||
+                                    activeSession.answers?.[question.id]?.managerOverride?.note ||
                                     ""
                                   }
                                   ref={(node) => {
