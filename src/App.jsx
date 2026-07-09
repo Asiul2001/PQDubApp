@@ -819,15 +819,39 @@ function buildAuditedAnswers(answers = {}, quizQuestions = {}) {
   };
 }
 
-function getQuizLabelForSession(session, pubQuizzes = []) {
-  const matchingQuiz = pubQuizzes.find(
-    (quiz) =>
-      quiz.quizCode === session?.quizCode ||
-      quiz.quizCode === session?.lobbyCode ||
-      (session?.quizId && session.quizId !== latestQuizId && quiz.id === session.quizId),
-  );
+function getNormalizedSessionQuizCode(session) {
+  const eventCode =
+    typeof session?.eventId === "string" ? session.eventId.split("__").pop() || "" : "";
 
-  return matchingQuiz?.title || session?.quizCode || session?.lobbyCode || "Pubquiz";
+  return normalizeQuizCode(session?.quizCode || session?.lobbyCode || eventCode || "");
+}
+
+function findPubQuizForSession(session, pubQuizzes = []) {
+  const normalizedQuizCode = getNormalizedSessionQuizCode(session);
+  const storedQuizId =
+    session?.quizId && session.quizId !== latestQuizId ? String(session.quizId) : "";
+
+  return pubQuizzes.find((quiz) => {
+    const quizCodeMatches =
+      normalizedQuizCode &&
+      normalizeQuizCode(quiz?.quizCode || "") === normalizedQuizCode;
+
+    const quizIdMatches = storedQuizId && String(quiz?.id || "") === storedQuizId;
+
+    return quizCodeMatches || quizIdMatches;
+  });
+}
+
+function getQuizLabelForSession(session, pubQuizzes = []) {
+  const matchingQuiz = findPubQuizForSession(session, pubQuizzes);
+
+  return (
+    matchingQuiz?.title ||
+    getNormalizedSessionQuizCode(session) ||
+    session?.quizCode ||
+    session?.lobbyCode ||
+    "Pubquiz"
+  );
 }
 
 function getRoundDisplayTitle(round, roundIndex = 0) {
@@ -9490,14 +9514,8 @@ function TeamDirectory({
     [selectedSessionId, selectedSessions],
   );
   const selectedPubQuiz = useMemo(
-    () =>
-      pubQuizzes.find(
-        (pubQuiz) =>
-          pubQuiz.quizCode === selectedSession?.quizCode ||
-          pubQuiz.quizCode === selectedSession?.lobbyCode ||
-          pubQuiz.id === selectedSession?.quizId,
-      ),
-    [pubQuizzes, selectedSession?.lobbyCode, selectedSession?.quizCode, selectedSession?.quizId],
+    () => findPubQuizForSession(selectedSession, pubQuizzes),
+    [pubQuizzes, selectedSession],
   );
   const selectedQuiz = useMemo(
     () => createRuntimeQuizFromPubQuiz(selectedPubQuiz),
@@ -9832,11 +9850,6 @@ function TeamDirectory({
                 </p>
               ) : (
                 selectedSessions.map((session) => {
-                  const pubQuiz = pubQuizzes.find(
-                    (quiz) =>
-                      quiz.quizCode === session.lobbyCode ||
-                      quiz.id === session.quizId,
-                  );
                   const isSelected = selectedSession?.id === session.id;
 
                   return (
