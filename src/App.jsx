@@ -7960,8 +7960,12 @@ function AdminScreen({
           />
         ) : personalTab === "teams" ? (
           <TeamDirectory
+            activeManager={activeManager}
             allVoucherDocs={allVoucherDocs}
             globalRankingRows={globalRankingRows}
+            onSubmitManagerAnswerForTeam={onSubmitManagerAnswerForTeam}
+            onUpdateTeamQuestionScore={onUpdateTeamQuestionScore}
+            onUpdateTeamScore={onUpdateTeamScore}
             pubQuizzes={pubQuizzes}
             teamProfiles={teamProfiles}
             teams={allTeamSessions.length ? allTeamSessions : allTeams}
@@ -9163,6 +9167,9 @@ function TeamDirectory({
   activeManager,
   allVoucherDocs = [],
   globalRankingRows = [],
+  onSubmitManagerAnswerForTeam,
+  onUpdateTeamQuestionScore,
+  onUpdateTeamScore,
   onUpdateVoucherStatus,
   pubQuizzes,
   teamProfiles,
@@ -9173,6 +9180,13 @@ function TeamDirectory({
   const [selectedAnswerRoundId, setSelectedAnswerRoundId] = useState(null);
   const [teamSearch, setTeamSearch] = useState("");
   const [voucherMessage, setVoucherMessage] = useState("");
+  const [scoreDraft, setScoreDraft] = useState("");
+  const [scoreNoteDraft, setScoreNoteDraft] = useState("");
+  const [scoreMessage, setScoreMessage] = useState("");
+  const [questionAnswerDrafts, setQuestionAnswerDrafts] = useState({});
+  const [questionScoreDrafts, setQuestionScoreDrafts] = useState({});
+  const [questionNoteDrafts, setQuestionNoteDrafts] = useState({});
+  const [questionMessages, setQuestionMessages] = useState({});
   const isNarrow = useIsNarrowScreen();
   const globalRankingMap = new Map(
     globalRankingRows.map((row) => [row.teamId, row]),
@@ -9265,6 +9279,7 @@ function TeamDirectory({
     selectedQuizQuestionsByRound[0] ||
     null;
   const selectedQuizQuestions = selectedQuestionRound?.questions || [];
+  const canEditScores = Boolean(canManagerEditScores(activeManager) && onUpdateTeamScore);
 
   useEffect(() => {
     if (!visibleTeams.some((team) => team.id === selectedTeamId)) {
@@ -9276,6 +9291,109 @@ function TeamDirectory({
   useEffect(() => {
     setSelectedAnswerRoundId(selectedQuizQuestionsByRound[0]?.id || null);
   }, [selectedSession?.id, selectedPubQuiz?.id]);
+
+  useEffect(() => {
+    if (!selectedSession) {
+      setScoreDraft("");
+      setScoreNoteDraft("");
+      setScoreMessage("");
+      setQuestionAnswerDrafts({});
+      setQuestionScoreDrafts({});
+      setQuestionNoteDrafts({});
+      setQuestionMessages({});
+      return;
+    }
+
+    setScoreDraft(String(Number(selectedSession.totalPoints) || 0));
+    setScoreNoteDraft(selectedSession.scoreAdjustment?.note || "");
+    setScoreMessage("");
+    setQuestionAnswerDrafts(
+      Object.fromEntries(
+        selectedQuizQuestions.map((question) => [
+          question.id,
+          selectedSession.answers?.[question.id]?.text || "",
+        ]),
+      ),
+    );
+    setQuestionScoreDrafts(
+      Object.fromEntries(
+        selectedQuizQuestions.map((question) => [
+          question.id,
+          String(Number(selectedSession.answers?.[question.id]?.pointsAwarded) || 0),
+        ]),
+      ),
+    );
+    setQuestionNoteDrafts(
+      Object.fromEntries(
+        selectedQuizQuestions.map((question) => [
+          question.id,
+          selectedSession.answers?.[question.id]?.manualOverride?.note ||
+            selectedSession.answers?.[question.id]?.managerOverride?.note ||
+            "",
+        ]),
+      ),
+    );
+    setQuestionMessages({});
+  }, [
+    selectedQuizQuestions,
+    selectedSession,
+    selectedSession?.answers,
+    selectedSession?.id,
+    selectedSession?.scoreAdjustment?.note,
+    selectedSession?.totalPoints,
+  ]);
+
+  async function handleScoreSave() {
+    if (!selectedTeam || !selectedSession || !canEditScores) return;
+
+    const result = await onUpdateTeamScore({
+      nextTotalPoints: scoreDraft,
+      note: scoreNoteDraft,
+      teamId: selectedSession.teamId || selectedSession.id,
+      teamName: selectedSession.teamName || selectedTeam.teamName,
+    });
+
+    setScoreMessage(result.message);
+  }
+
+  async function handleQuestionScoreSave(question) {
+    if (!selectedTeam || !selectedSession || !canEditScores || !onUpdateTeamQuestionScore) {
+      return;
+    }
+
+    const result = await onUpdateTeamQuestionScore({
+      nextPointsAwarded: questionScoreDrafts[question.id] ?? "0",
+      note: questionNoteDrafts[question.id] || "",
+      questionId: question.id,
+      questionTitle: question.title,
+      teamId: selectedSession.teamId || selectedSession.id,
+      teamName: selectedSession.teamName || selectedTeam.teamName,
+    });
+
+    setQuestionMessages((current) => ({
+      ...current,
+      [question.id]: result.message,
+    }));
+  }
+
+  async function handleManagerAnswerSave(question) {
+    if (!selectedTeam || !selectedSession || !canEditScores || !onSubmitManagerAnswerForTeam) {
+      return;
+    }
+
+    const result = await onSubmitManagerAnswerForTeam({
+      answerText: questionAnswerDrafts[question.id] ?? "",
+      note: questionNoteDrafts[question.id] || "",
+      question,
+      teamId: selectedSession.teamId || selectedSession.id,
+      teamName: selectedSession.teamName || selectedTeam.teamName,
+    });
+
+    setQuestionMessages((current) => ({
+      ...current,
+      [question.id]: result.message,
+    }));
+  }
 
   return (
     <section style={{ marginTop: 24 }}>
@@ -9657,6 +9775,61 @@ function TeamDirectory({
                   </div>
                 )}
 
+                {canEditScores && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gap: 10,
+                      marginBottom: 16,
+                      padding: 12,
+                      border: "1px solid #334155",
+                      borderRadius: 10,
+                      background: "#020617",
+                    }}
+                  >
+                    <strong>Punkte manuell korrigieren</strong>
+                    <label style={{ display: "grid", gap: 6 }}>
+                      <span style={{ color: "#cbd5e1" }}>Neuer Gesamtpunktestand</span>
+                      <input
+                        value={scoreDraft}
+                        onChange={(event) => setScoreDraft(event.target.value)}
+                        inputMode="numeric"
+                        style={inputStyle}
+                      />
+                    </label>
+                    <label style={{ display: "grid", gap: 6 }}>
+                      <span style={{ color: "#cbd5e1" }}>Notiz fuer Manager</span>
+                      <input
+                        value={scoreNoteDraft}
+                        onChange={(event) => setScoreNoteDraft(event.target.value)}
+                        placeholder="z. B. Bewertungsfehler bei Frage 4"
+                        style={inputStyle}
+                      />
+                    </label>
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      <button
+                        onClick={handleScoreSave}
+                        style={{
+                          padding: "10px 14px",
+                          borderRadius: 12,
+                          border: "none",
+                          background: "#f59e0b",
+                          color: "#111827",
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Punkte speichern
+                      </button>
+                      {scoreMessage && (
+                        <span style={{ alignSelf: "center", color: "#93c5fd" }}>
+                          {scoreMessage}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {(selectedPubQuiz?.tiebreakerQuestion ||
                   Number.isFinite(Number(selectedPubQuiz?.tiebreakerAnswer))) && (
                   <section
@@ -9788,6 +9961,107 @@ function TeamDirectory({
                             <p style={{ margin: "6px 0 0", color: "#fde68a" }}>
                               Notiz: {answer.manualOverride.note}
                             </p>
+                          )}
+                          {answer?.managerOverride?.active && (
+                            <p style={{ margin: "6px 0 0", color: "#93c5fd", fontWeight: 700 }}>
+                              Antwort nachtraeglich von Manager gespeichert
+                            </p>
+                          )}
+                          {canEditScores && (
+                            <div
+                              style={{
+                                display: "grid",
+                                gap: 8,
+                                marginTop: 12,
+                                paddingTop: 12,
+                                borderTop: "1px solid #1f2937",
+                              }}
+                            >
+                              <label style={{ display: "grid", gap: 6 }}>
+                                <span style={{ color: "#cbd5e1" }}>
+                                  Antwort fuer diese Frage
+                                </span>
+                                <input
+                                  value={questionAnswerDrafts[question.id] ?? ""}
+                                  onChange={(event) =>
+                                    setQuestionAnswerDrafts((current) => ({
+                                      ...current,
+                                      [question.id]: event.target.value,
+                                    }))
+                                  }
+                                  placeholder="Antwort fuer das Team nachtragen"
+                                  style={inputStyle}
+                                />
+                              </label>
+                              <label style={{ display: "grid", gap: 6 }}>
+                                <span style={{ color: "#cbd5e1" }}>
+                                  Punkte fuer diese Frage
+                                </span>
+                                <input
+                                  value={questionScoreDrafts[question.id] ?? ""}
+                                  onChange={(event) =>
+                                    setQuestionScoreDrafts((current) => ({
+                                      ...current,
+                                      [question.id]: event.target.value,
+                                    }))
+                                  }
+                                  inputMode="decimal"
+                                  style={inputStyle}
+                                />
+                              </label>
+                              <label style={{ display: "grid", gap: 6 }}>
+                                <span style={{ color: "#cbd5e1" }}>Notiz</span>
+                                <input
+                                  value={questionNoteDrafts[question.id] ?? ""}
+                                  onChange={(event) =>
+                                    setQuestionNoteDrafts((current) => ({
+                                      ...current,
+                                      [question.id]: event.target.value,
+                                    }))
+                                  }
+                                  placeholder="z. B. Antwort trotzdem gelten lassen"
+                                  style={inputStyle}
+                                />
+                              </label>
+                              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                                <button
+                                  onClick={() => handleManagerAnswerSave(question)}
+                                  style={{
+                                    padding: "8px 12px",
+                                    borderRadius: 10,
+                                    border: "none",
+                                    background: "#0ea5e9",
+                                    color: "#082f49",
+                                    fontWeight: 700,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Antwort nachtragen
+                                </button>
+                                <button
+                                  onClick={() => handleQuestionScoreSave(question)}
+                                  style={{
+                                    padding: "8px 12px",
+                                    borderRadius: 10,
+                                    border: "none",
+                                    background: "#f59e0b",
+                                    color: "#111827",
+                                    fontWeight: 700,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  Frage speichern
+                                </button>
+                                <span style={{ alignSelf: "center", color: "#94a3b8" }}>
+                                  Maximalwert laut Quiz: {question.points || 0}
+                                </span>
+                                {questionMessages[question.id] && (
+                                  <span style={{ alignSelf: "center", color: "#93c5fd" }}>
+                                    {questionMessages[question.id]}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           )}
                         </article>
                       );
