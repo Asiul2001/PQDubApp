@@ -538,12 +538,14 @@ function readRecentManagerSession() {
   }
 }
 
-function saveRecentManagerSession({ lobbyCode = "", manager }) {
+function saveRecentManagerSession({ adminTab = "live", appView = "admin", lobbyCode = "", manager }) {
   if (typeof window === "undefined" || !manager?.id) return;
 
   window.localStorage.setItem(
     RECENT_MANAGER_SESSION_KEY,
     JSON.stringify({
+      adminTab,
+      appView,
       lobbyCode: normalizeQuizCode(lobbyCode || ""),
       manager: {
         active: manager.active !== false,
@@ -2103,8 +2105,12 @@ function App() {
   const [answerDrafts, setAnswerDrafts] = useState({});
   const [now, setNow] = useState(() => Date.now());
   const [pendingTeamCreate, setPendingTeamCreate] = useState(null);
-  const [appView, setAppView] = useState("main");
-  const [adminTab, setAdminTab] = useState("live");
+  const [appView, setAppView] = useState(() =>
+    recentManagerCandidate?.manager ? recentManagerCandidate.appView || "admin" : "main",
+  );
+  const [adminTab, setAdminTab] = useState(() =>
+    recentManagerCandidate?.manager ? recentManagerCandidate.adminTab || "live" : "live",
+  );
   const [isRestoringSession, setIsRestoringSession] = useState(() =>
     Boolean(recentSessionCandidate),
   );
@@ -2151,6 +2157,8 @@ function App() {
   useEffect(() => {
     if (isAdmin && activeManager) {
       saveRecentManagerSession({
+        adminTab,
+        appView,
         lobbyCode: sessionData?.lobbyCode || lobbyCode,
         manager: activeManager,
       });
@@ -2160,7 +2168,7 @@ function App() {
     if (!isAdmin) {
       clearRecentManagerSession();
     }
-  }, [activeManager, isAdmin, lobbyCode, sessionData?.lobbyCode]);
+  }, [activeManager, adminTab, appView, isAdmin, lobbyCode, sessionData?.lobbyCode]);
 
   useEffect(() => {
     if (activeManager || sessionData?.managerOnly) return undefined;
@@ -3373,6 +3381,8 @@ function App() {
         totalPoints: 0,
       });
       saveRecentManagerSession({
+        adminTab: "live",
+        appView: "admin",
         lobbyCode: "",
         manager: validatedManager,
       });
@@ -3501,6 +3511,8 @@ function App() {
 
       setActiveManager(validatedManager);
       saveRecentManagerSession({
+        adminTab: adminTab || "live",
+        appView: "admin",
         lobbyCode: cleanedCode,
         manager: validatedManager,
       });
@@ -9741,8 +9753,9 @@ function TeamDirectory({
               data.teamId ||
               normalizeTeamName(data.teamName || "");
 
-            if (data.quizId !== latestQuizId) return null;
             if (sessionTeamKey !== normalizedTeamId) return null;
+            if (data.managerOnly) return null;
+            if (data.quizId && data.quizId !== latestQuizId) return null;
 
             return {
               id: snapshot.id,
@@ -9757,7 +9770,18 @@ function TeamDirectory({
             return timeDifference || (a.teamName || "").localeCompare(b.teamName || "");
           });
 
-        setSelectedTeamHistorySessions(sessions);
+        const fallbackSessions = selectedTeam.sessions || [];
+        const mergedSessions = mergeSessionParticipation([
+          ...fallbackSessions,
+          ...sessions,
+        ]).map((session) => ({
+          ...session,
+          sessionKey:
+            session.sessionKey ||
+            `${session.eventId || "event"}__${session.id || session.teamId || "session"}`,
+        }));
+
+        setSelectedTeamHistorySessions(mergedSessions);
       } catch (error) {
         console.error("TEAM DIRECTORY HISTORY LOAD ERROR:", error);
         if (!cancelled) {
