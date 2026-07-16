@@ -1892,6 +1892,11 @@ function findPrintableScale(doc, round, imageSizes, contentWidth, maxHeight) {
 }
 
 function drawPrintableCopy(doc, round, quizTitle, copyLabel, x, y, width, height, imageSizes) {
+  const accentBorder = [163, 177, 138];
+  const accentFill = [243, 247, 240];
+  const accentText = [74, 104, 65];
+  const questionBorder = [220, 231, 214];
+  const questionFill = [250, 252, 248];
   const outerPadding = 4.2;
   const contentWidth = width - outerPadding * 2;
   const contentHeight = height - outerPadding * 2;
@@ -1910,21 +1915,21 @@ function drawPrintableCopy(doc, round, quizTitle, copyLabel, x, y, width, height
   const innerX = x + outerPadding;
   let cursorY = y + outerPadding;
 
-  doc.setDrawColor(148, 163, 184);
+  doc.setDrawColor(...accentBorder);
   doc.setFillColor(255, 255, 255);
   doc.roundedRect(x, y, width, height, 3.5, 3.5, "FD");
 
-  doc.setDrawColor(203, 213, 225);
-  doc.setFillColor(241, 245, 249);
+  doc.setDrawColor(...accentBorder);
+  doc.setFillColor(...accentFill);
   doc.roundedRect(x + 1.5, y + 1.5, width - 3, 17, 2.8, 2.8, "FD");
 
-  doc.setTextColor(107, 114, 128);
+  doc.setTextColor(...accentText);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(titleSize);
   doc.text(quizTitle || "Pubquiz", innerX, cursorY);
   cursorY += titleSize * 0.42 + 1 * scale;
 
-  doc.setTextColor(71, 85, 105);
+  doc.setTextColor(...accentText);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(metaSize);
   doc.text(`${copyLabel}  |  Zum Mitspielen und Abgeben`, innerX, cursorY);
@@ -1961,8 +1966,8 @@ function drawPrintableCopy(doc, round, quizTitle, copyLabel, x, y, width, height
       noteLines.length * noteSize * 0.4 +
       (imageLayout.height ? imageLayout.height + 1.5 * scale : 0);
 
-    doc.setDrawColor(226, 232, 240);
-    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(...questionBorder);
+    doc.setFillColor(...questionFill);
     doc.roundedRect(
       innerX - 1.5,
       cursorY - 2,
