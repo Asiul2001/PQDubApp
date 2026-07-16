@@ -12043,6 +12043,7 @@ function PubQuizManager({
   const [draft, setDraft] = useState(() => createBlankPubQuizDraft());
   const [openRoundId, setOpenRoundId] = useState("round1");
   const [codeDraft, setCodeDraft] = useState("");
+  const [copyAnswersLabel, setCopyAnswersLabel] = useState("Copy answers");
   const [quizPendingDelete, setQuizPendingDelete] = useState(null);
   const isNarrow = useIsNarrowScreen();
   const canDeletePubQuizzes = Boolean(activeManager?.headManager);
@@ -12091,6 +12092,30 @@ function PubQuizManager({
         quizCode: savedQuiz.quizCode,
       }));
     }
+  }
+
+  async function handleCopyAnswers() {
+    const sanitizedQuiz = sanitizePubQuizDraft(draft, { includeImages: false });
+    const answersText = (sanitizedQuiz.rounds || [])
+      .map((round, roundIndex) => {
+        const roundTitle =
+          getRoundDisplayTitle(round, roundIndex) ||
+          `Runde ${roundIndex + 1}`;
+        const questionLines = (round.questions || []).map((question, questionIndex) => {
+          const acceptedAnswers = Array.isArray(question.acceptedAnswers)
+            ? question.acceptedAnswers.filter(Boolean)
+            : [];
+
+          return `Frage ${questionIndex + 1}: ${acceptedAnswers.join(" / ") || "-"}`;
+        });
+
+        return [roundTitle, ...questionLines].join("\n");
+      })
+      .join("\n\n");
+
+    await navigator.clipboard?.writeText(answersText);
+    setCopyAnswersLabel("Kopiert");
+    window.setTimeout(() => setCopyAnswersLabel("Copy answers"), 1600);
   }
 
   async function handleQuestionImages(roundIndex, questionIndex, files) {
@@ -12640,19 +12665,34 @@ function PubQuizManager({
             <span style={{ color: "#93c5fd" }}>{message}</span>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               {draft.id && (
-                <button
-                  onClick={() => createPrintableTeamQuizPdf(draft)}
-                  style={{
-                    padding: "12px 18px",
-                    border: "1px solid #38bdf8",
-                    borderRadius: 12,
-                    background: "#082f49",
-                    color: "#e0f2fe",
-                    fontWeight: 700,
-                  }}
-                >
-                  Team-PDF erstellen
-                </button>
+                <>
+                  <button
+                    onClick={handleCopyAnswers}
+                    style={{
+                      padding: "12px 18px",
+                      border: "1px solid #334155",
+                      borderRadius: 12,
+                      background: "#020617",
+                      color: "#e5e7eb",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {copyAnswersLabel}
+                  </button>
+                  <button
+                    onClick={() => createPrintableTeamQuizPdf(draft)}
+                    style={{
+                      padding: "12px 18px",
+                      border: "1px solid #38bdf8",
+                      borderRadius: 12,
+                      background: "#082f49",
+                      color: "#e0f2fe",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Team-PDF erstellen
+                  </button>
+                </>
               )}
               <button
                 onClick={handleSave}
