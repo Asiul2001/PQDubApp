@@ -265,6 +265,10 @@ function isRoundAnswersRevealed(lobbyData, roundId) {
   return Boolean(lobbyData?.revealedAnswers?.[roundId]);
 }
 
+function isAutomaticUnlockEnabled(lobbyData) {
+  return Boolean(lobbyData?.automaticRoundUnlockEnabled);
+}
+
 function formatDuration(ms) {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -1093,15 +1097,52 @@ function getVoucherIdentityKey(entry) {
 function mergeVoucherDocs(primaryDocs = [], fallbackDocs = []) {
   const mergedById = new Map();
 
+  function mergeVoucherEntry(existingVoucher, incomingVoucher) {
+    if (!existingVoucher) return incomingVoucher;
+    if (!incomingVoucher) return existingVoucher;
+
+    const existingUpdatedMs = getTimestampMs(
+      existingVoucher.updatedAt ||
+        existingVoucher.redeemedAt ||
+        existingVoucher.requestedAt ||
+        existingVoucher.awardedAt,
+    );
+    const incomingUpdatedMs = getTimestampMs(
+      incomingVoucher.updatedAt ||
+        incomingVoucher.redeemedAt ||
+        incomingVoucher.requestedAt ||
+        incomingVoucher.awardedAt,
+    );
+    const preferredVoucher =
+      incomingUpdatedMs > existingUpdatedMs
+        ? incomingVoucher
+        : incomingUpdatedMs < existingUpdatedMs
+          ? existingVoucher
+          : incomingVoucher.storageSource === "event" &&
+              existingVoucher.storageSource !== "event"
+            ? incomingVoucher
+            : existingVoucher;
+    const fallbackVoucher =
+      preferredVoucher === incomingVoucher ? existingVoucher : incomingVoucher;
+
+    return {
+      ...fallbackVoucher,
+      ...preferredVoucher,
+    };
+  }
+
   fallbackDocs.forEach((voucher) => {
-    mergedById.set(voucher.id, voucher);
+    mergedById.set(
+      voucher.id,
+      mergeVoucherEntry(mergedById.get(voucher.id), voucher),
+    );
   });
 
   primaryDocs.forEach((voucher) => {
-    mergedById.set(voucher.id, {
-      ...mergedById.get(voucher.id),
-      ...voucher,
-    });
+    mergedById.set(
+      voucher.id,
+      mergeVoucherEntry(mergedById.get(voucher.id), voucher),
+    );
   });
 
   return [...mergedById.values()];
@@ -3091,6 +3132,45 @@ function App() {
     sessionData?.lobbyCode,
   ]);
 
+  useEffect(() => {
+    if (!activeManager || !sessionData?.lobbyCode) return;
+    if (!isAutomaticUnlockEnabled(lobbyData)) return;
+    if (registeredTeams.length === 0) return;
+
+    const nextRoundToUnlock = quizRounds.find((round, roundIndex) => {
+      if (roundIndex === 0) return false;
+      if (isRoundUnlocked(lobbyData, round.id)) return false;
+
+      const previousRound = quizRounds[roundIndex - 1];
+      if (!previousRound) return false;
+
+      const finishedTeams = registeredTeams.filter((team) =>
+        isRoundFinished(team, previousRound, now, lobbyData, quizRounds),
+      ).length;
+
+      return finishedTeams / registeredTeams.length >= 0.8;
+    });
+
+    if (!nextRoundToUnlock) return;
+
+    unlockRound(nextRoundToUnlock.id)
+      .then(() => {
+        setQuizManagerMessage(
+          `${getRoundDisplayTitle(nextRoundToUnlock, quizRounds.findIndex((round) => round.id === nextRoundToUnlock.id))} wurde automatisch freigeschaltet.`,
+        );
+      })
+      .catch((error) => {
+        console.error("AUTO ROUND UNLOCK ERROR:", error);
+      });
+  }, [
+    activeManager,
+    lobbyData,
+    now,
+    quizRounds,
+    registeredTeams,
+    sessionData?.lobbyCode,
+  ]);
+
   function updateAnswerDraft(questionId, value) {
     setAnswerDrafts((currentDrafts) => ({
       ...currentDrafts,
@@ -4021,6 +4101,35 @@ function App() {
       setActiveRoundId(roundId);
     } catch (error) {
       console.error("ROUND UNLOCK ERROR:", error);
+    }
+  }
+
+  async function setAutomaticRoundUnlock(enabled) {
+    if (!isAdmin || !sessionData?.lobbyCode) return false;
+
+    try {
+      await setDoc(
+        getEventRef(sessionData.lobbyCode),
+        {
+          automaticRoundUnlockEnabled: Boolean(enabled),
+          lobbyCode: sessionData.lobbyCode,
+          quizId: latestQuizId,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+      setQuizManagerMessage(
+        enabled
+          ? "Automatisches Entsperren ist jetzt aktiv."
+          : "Automatisches Entsperren ist jetzt ausgeschaltet.",
+      );
+      return true;
+    } catch (error) {
+      console.error("AUTO UNLOCK TOGGLE ERROR:", error);
+      setQuizManagerMessage(
+        `Automatisches Entsperren konnte nicht gespeichert werden: ${error.message}`,
+      );
+      return false;
     }
   }
 
@@ -5849,6 +5958,7 @@ function App() {
           onSaveManager={saveManager}
           onSaveHistoricalEventRanking={saveHistoricalEventRanking}
           onSavePubQuiz={savePubQuiz}
+          onSetAutomaticRoundUnlock={setAutomaticRoundUnlock}
           onSubmitManagerAnswerForTeam={submitManagerAnswerForTeam}
           onUpdateTeamPodiumExclusion={updateTeamPodiumExclusion}
           onUpdateTeamQuestionScore={updateTeamQuestionScore}
@@ -8228,6 +8338,7 @@ function AdminScreen({
   onCreateVoucherAssignment,
   onDeletePubQuiz,
   onDeleteVoucherAssignment,
+  onSetAutomaticRoundUnlock,
   onOpenAdmin,
   onOpenFaq,
   onOpenMain,
@@ -8361,12 +8472,14 @@ function AdminScreen({
             answersRevealed={answersRevealed}
             canRevealAnswers={canRevealAnswers}
             lobbyData={lobbyData}
+            message={quizManagerMessage}
             now={now}
             onAddRoundExtraTime={onAddRoundExtraTime}
             onCloseNewRegistrations={onCloseNewRegistrations}
             onRevealRoundAnswers={onRevealRoundAnswers}
             onReopenNewRegistrations={onReopenNewRegistrations}
             onRoundChange={onRoundChange}
+            onSetAutomaticRoundUnlock={onSetAutomaticRoundUnlock}
             onSubmitManagerAnswerForTeam={onSubmitManagerAnswerForTeam}
             onUpdateTeamPodiumExclusion={onUpdateTeamPodiumExclusion}
             onUpdateTeamQuestionScore={onUpdateTeamQuestionScore}
@@ -8653,7 +8766,38 @@ function VoucherDirectory({
     }
   });
 
-  const teamDirectory = aggregateTeamDirectory(allTeamSessions, teamProfiles).sort((a, b) => {
+  const baseTeamDirectory = aggregateTeamDirectory(allTeamSessions, teamProfiles);
+  const teamDirectory = Array.from(
+    allEffectiveVouchers.reduce((map, voucher) => {
+      const teamKey = voucher.teamId || normalizeTeamName(voucher.teamName || "");
+      if (!teamKey) return map;
+
+      const current =
+        map.get(teamKey) || {
+          id: teamKey,
+          normalizedPlayerNames: [],
+          playerNames: [],
+          rankingOptIn: false,
+          rankingPassword: "",
+          sessions: [],
+          teamName: voucher.teamName || teamKey,
+          teamNameNormalized: teamKey,
+          totalPoints: Number(voucher.totalPoints) || 0,
+        };
+
+      map.set(teamKey, {
+        ...current,
+        teamName: current.teamName || voucher.teamName || teamKey,
+        teamNameNormalized: current.teamNameNormalized || teamKey,
+        totalPoints: Math.max(
+          Number(current.totalPoints) || 0,
+          Number(voucher.totalPoints) || 0,
+        ),
+      });
+
+      return map;
+    }, new Map(baseTeamDirectory.map((team) => [team.id, team]))).values(),
+  ).sort((a, b) => {
     const voucherDifference =
       (voucherLatestPlayedByTeam.get(b.id) || 0) - (voucherLatestPlayedByTeam.get(a.id) || 0);
 
@@ -8739,21 +8883,67 @@ function VoucherDirectory({
     selectedEventDraftOrder.length > 0
       ? applyManualRankingOrder(selectedEventBaseRows, selectedEventDraftOrder)
       : selectedEventBaseRows;
-  const selectedEventSessions = selectedEventRankingRows.map((row) => {
-    const matchingSession = selectedEventMergedSessions.find(
-      (session) => (session.teamId || session.id) === row.teamId,
-    );
+  const selectedEventVoucherCandidates =
+    (selectedEventVoucherDocs.length > 0
+      ? buildAllVoucherEntries([], selectedEventVoucherDocs, pubQuizzes)
+      : allEffectiveVouchers
+    ).filter((voucher) => !voucher.deleted && voucher.eventId === selectedEvent?.eventId);
+  const selectedEventSessions = Array.from(
+    selectedEventVoucherCandidates.reduce((map, voucher) => {
+      const teamKey = voucher.teamId || normalizeTeamName(voucher.teamName || "");
+      if (!teamKey) return map;
 
-    return {
-      ...matchingSession,
-      id: matchingSession?.id || row.sourceSessionId || row.teamId,
-      teamId: row.teamId,
-      teamName: row.teamName,
-      totalPoints: Number(row.totalPoints) || 0,
-      rankDaily: row.rank,
-      podiumBonusPoints: row.podiumBonusPoints || 0,
-    };
-  });
+      if (map.has(teamKey)) return map;
+
+      const matchingSession = selectedEventMergedSessions.find(
+        (session) => (session.teamId || session.id) === teamKey,
+      );
+      const matchingRow = selectedEventRankingRows.find((row) => row.teamId === teamKey);
+
+      map.set(teamKey, {
+        ...matchingSession,
+        id:
+          matchingSession?.id ||
+          voucher.sourceSessionId ||
+          matchingRow?.sourceSessionId ||
+          teamKey,
+        teamId: teamKey,
+        teamName:
+          matchingSession?.teamName ||
+          matchingRow?.teamName ||
+          voucher.teamName ||
+          teamKey,
+        totalPoints:
+          Number(matchingSession?.totalPoints) ||
+          Number(matchingRow?.totalPoints) ||
+          Number(voucher.totalPoints) ||
+          0,
+        rankDaily: matchingRow?.rank || Number(voucher.rank) || 0,
+        podiumBonusPoints: matchingRow?.podiumBonusPoints || 0,
+      });
+
+      return map;
+    }, new Map(
+      selectedEventRankingRows.map((row) => {
+        const matchingSession = selectedEventMergedSessions.find(
+          (session) => (session.teamId || session.id) === row.teamId,
+        );
+
+        return [
+          row.teamId,
+          {
+            ...matchingSession,
+            id: matchingSession?.id || row.sourceSessionId || row.teamId,
+            teamId: row.teamId,
+            teamName: row.teamName,
+            totalPoints: Number(row.totalPoints) || 0,
+            rankDaily: row.rank,
+            podiumBonusPoints: row.podiumBonusPoints || 0,
+          },
+        ];
+      }),
+    )).values(),
+  );
   const selectedEventTeamIds = Array.from(
     new Set(selectedEventSessions.map((session) => session.teamId || session.id).filter(Boolean)),
   );
@@ -8764,12 +8954,7 @@ function VoucherDirectory({
     selectedEventRankingRows.map((row) => row.teamId).join("|");
   const hasUnsavedEventRankingOrder =
     draftSelectedEventOrder !== persistedSelectedEventOrder;
-  const selectedEventEffectiveVouchers =
-    selectedEventVoucherDocs.length > 0
-      ? buildAllVoucherEntries(selectedEventSessions, selectedEventVoucherDocs, pubQuizzes)
-      : allEffectiveVouchers;
-  const selectedEventVouchers = selectedEventEffectiveVouchers
-    .filter((voucher) => !voucher.deleted && voucher.eventId === selectedEvent?.eventId)
+  const selectedEventVouchers = selectedEventVoucherCandidates
     .sort(
       (a, b) =>
         getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt) ||
@@ -10835,12 +11020,14 @@ function LiveControlPanel({
   answersRevealed,
   canRevealAnswers,
   lobbyData,
+  message,
   now,
   onAddRoundExtraTime,
   onCloseNewRegistrations,
   onRevealRoundAnswers,
   onReopenNewRegistrations,
   onRoundChange,
+  onSetAutomaticRoundUnlock,
   onSubmitManagerAnswerForTeam,
   onUpdateTeamPodiumExclusion,
   onUpdateTeamQuestionScore,
@@ -10862,6 +11049,7 @@ function LiveControlPanel({
   const [podiumMessage, setPodiumMessage] = useState("");
   const [teamSearch, setTeamSearch] = useState("");
   const hydratedLiveTeamIdRef = useRef("");
+  const automaticUnlockEnabled = isAutomaticUnlockEnabled(lobbyData);
   const roundUnlocked = canRevealAnswers || answersRevealed;
   const answerWindowEndsMs = getTimestampMs(lobbyData?.answerWindowEndsAt);
   const answerWindowClosed = isAnswerWindowClosed(lobbyData, now);
@@ -10891,6 +11079,15 @@ function LiveControlPanel({
       null,
     [selectedTeamId, visibleTeamStatuses],
   );
+  const selectedRoundIndex = quizRounds.findIndex((round) => round.id === selectedRound.id);
+  const nextRound = selectedRoundIndex >= 0 ? quizRounds[selectedRoundIndex + 1] || null : null;
+  const finishedSelectedRoundCount = teamStatuses.filter((team) =>
+    isRoundFinished(team, selectedRound, now, lobbyData, quizRounds),
+  ).length;
+  const selectedRoundCompletionRate =
+    teamStatuses.length > 0 ? finishedSelectedRoundCount / teamStatuses.length : 0;
+  const automaticUnlockThresholdReached =
+    teamStatuses.length > 0 && selectedRoundCompletionRate >= 0.8;
   const selectedQuestionIds = selectedQuestions.map((question) => question.id);
   const canEditScores = Boolean(canManagerEditScores(activeManager) && onUpdateTeamScore);
 
@@ -11085,6 +11282,48 @@ function LiveControlPanel({
               10 Minuten nach Team-Startfreigabe
             </strong>
           </p>
+          <div
+            style={{
+              marginBottom: 14,
+              padding: 12,
+              border: "1px solid #1f2937",
+              borderRadius: 12,
+              background: "#020617",
+            }}
+          >
+            <label
+              style={{
+                display: "flex",
+                gap: 10,
+                alignItems: "center",
+                color: "#e5e7eb",
+                fontWeight: 700,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={automaticUnlockEnabled}
+                onChange={(e) => onSetAutomaticRoundUnlock?.(e.target.checked)}
+              />
+              Automatisches entsperren
+            </label>
+            <p style={{ margin: "8px 0 0", color: "#94a3b8" }}>
+              Wenn 80% der Teams eine Runde beendet haben, wird die naechste Runde automatisch freigeschaltet.
+            </p>
+            <p
+              style={{
+                margin: "8px 0 0",
+                color: automaticUnlockThresholdReached ? "#86efac" : "#cbd5e1",
+              }}
+            >
+              Fortschritt fuer {selectedRound.title}:{" "}
+              <strong>
+                {finishedSelectedRoundCount}/{teamStatuses.length} Teams
+              </strong>{" "}
+              ({Math.round(selectedRoundCompletionRate * 100)}%)
+              {nextRound ? ` - naechste Runde: ${nextRound.title}` : " - letzte Runde"}
+            </p>
+          </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button onClick={() => onUnlockRound(selectedRound.id)}>
               Runde freischalten
@@ -11150,6 +11389,7 @@ function LiveControlPanel({
               Lösungen trotzdem erst nach ihrem eigenen Timer.
             </p>
           )}
+          {message && <p style={{ color: "#93c5fd", marginBottom: 0 }}>{message}</p>}
         </section>
 
         <section style={{ marginTop: 24 }}>
