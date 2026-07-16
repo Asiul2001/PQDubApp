@@ -8891,35 +8891,15 @@ function VoucherDirectory({
   const selectedEventSessions = Array.from(
     selectedEventVoucherCandidates.reduce((map, voucher) => {
       const teamKey = voucher.teamId || normalizeTeamName(voucher.teamName || "");
-      if (!teamKey) return map;
-
-      if (map.has(teamKey)) return map;
-
-      const matchingSession = selectedEventMergedSessions.find(
-        (session) => (session.teamId || session.id) === teamKey,
-      );
-      const matchingRow = selectedEventRankingRows.find((row) => row.teamId === teamKey);
+      if (!teamKey || map.has(teamKey)) return map;
 
       map.set(teamKey, {
-        ...matchingSession,
-        id:
-          matchingSession?.id ||
-          voucher.sourceSessionId ||
-          matchingRow?.sourceSessionId ||
-          teamKey,
+        id: voucher.sourceSessionId || teamKey,
         teamId: teamKey,
-        teamName:
-          matchingSession?.teamName ||
-          matchingRow?.teamName ||
-          voucher.teamName ||
-          teamKey,
-        totalPoints:
-          Number(matchingSession?.totalPoints) ||
-          Number(matchingRow?.totalPoints) ||
-          Number(voucher.totalPoints) ||
-          0,
-        rankDaily: matchingRow?.rank || Number(voucher.rank) || 0,
-        podiumBonusPoints: matchingRow?.podiumBonusPoints || 0,
+        teamName: voucher.teamName || teamKey,
+        totalPoints: Number(voucher.totalPoints) || 0,
+        rankDaily: Number(voucher.rank) || 0,
+        podiumBonusPoints: 0,
       });
 
       return map;
