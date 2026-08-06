@@ -14,6 +14,7 @@ service cloud.firestore {
         "activeRoundId",
         "answerWindowEndsAt",
         "answerWindowStartedAt",
+        "automaticRoundUnlockEnabled",
         "emergencyJoinAnnouncement",
         "emergencyJoinWindowEndsAt",
         "startedAt",
@@ -41,6 +42,7 @@ service cloud.firestore {
       && (!("status" in request.resource.data) || request.resource.data.status is string)
       && (!("answerWindowEndsAt" in request.resource.data) || request.resource.data.answerWindowEndsAt is timestamp)
       && (!("answerWindowStartedAt" in request.resource.data) || request.resource.data.answerWindowStartedAt is timestamp)
+      && (!("automaticRoundUnlockEnabled" in request.resource.data) || request.resource.data.automaticRoundUnlockEnabled is bool)
       && (!("emergencyJoinWindowEndsAt" in request.resource.data) || request.resource.data.emergencyJoinWindowEndsAt is timestamp)
       && (!("startedAt" in request.resource.data) || request.resource.data.startedAt is timestamp)
       && (!("closedAt" in request.resource.data) || request.resource.data.closedAt is timestamp)

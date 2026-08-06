@@ -2585,7 +2585,7 @@ function App() {
             ...data,
           };
         })
-        .filter((session) => session.quizId === latestQuizId)
+        .filter((session) => Boolean(session.eventId || session.quizCode || session.lobbyCode))
         .sort((a, b) => {
           const timeDifference =
             getTimestampMs(getCompletionValue(b)) - getTimestampMs(getCompletionValue(a));
@@ -4092,20 +4092,24 @@ function App() {
         {
           quizId: latestQuizId,
           lobbyCode: sessionData.lobbyCode,
-          activeRoundId: roundId,
-          roundStarts: {
-            [roundId]: serverTimestamp(),
-          },
-          unlockedRounds: {
-            [roundId]: true,
-          },
+          quizCode: sessionData.lobbyCode,
           updatedAt: serverTimestamp(),
         },
         { merge: true },
       );
+
+      await updateDoc(lobbyRef, {
+        activeRoundId: roundId,
+        [`roundStarts.${roundId}`]: serverTimestamp(),
+        [`unlockedRounds.${roundId}`]: true,
+        updatedAt: serverTimestamp(),
+      });
       setActiveRoundId(roundId);
     } catch (error) {
       console.error("ROUND UNLOCK ERROR:", error);
+      setQuizManagerMessage(
+        `Runde konnte nicht freigeschaltet werden: ${error.message}`,
+      );
     }
   }
 
@@ -4118,6 +4122,7 @@ function App() {
         {
           automaticRoundUnlockEnabled: Boolean(enabled),
           lobbyCode: sessionData.lobbyCode,
+          quizCode: sessionData.lobbyCode,
           quizId: latestQuizId,
           updatedAt: serverTimestamp(),
         },
@@ -4288,12 +4293,10 @@ function App() {
         updatedAt: startedAt,
       }));
 
-      await setDoc(sessionRef, {
-        roundStarts: {
-          [roundId]: startedAt,
-        },
+      await updateDoc(sessionRef, {
+        [`roundStarts.${roundId}`]: startedAt,
         updatedAt: serverTimestamp(),
-      }, { merge: true });
+      });
     } catch (error) {
       console.error("TEAM ROUND START ERROR:", error);
       setMessage(`Timer konnte nicht gestartet werden: ${error.message}`);
