@@ -31,6 +31,7 @@ service cloud.firestore {
         "tiebreakerStartedAt",
         "tiebreakerStatus",
         "tiebreakerSubmissions",
+        "tiebreakerTeamStates",
         "finalReady",
         "unlockedRounds",
         "createdAt",
@@ -56,7 +57,8 @@ service cloud.firestore {
       && (!("roundExtraMinutes" in request.resource.data) || request.resource.data.roundExtraMinutes is map)
       && (!("roundExtraAnnouncements" in request.resource.data) || request.resource.data.roundExtraAnnouncements is map)
       && (!("tiebreakerStatus" in request.resource.data) || request.resource.data.tiebreakerStatus is string)
-      && (!("tiebreakerSubmissions" in request.resource.data) || request.resource.data.tiebreakerSubmissions is map);
+      && (!("tiebreakerSubmissions" in request.resource.data) || request.resource.data.tiebreakerSubmissions is map)
+      && (!("tiebreakerTeamStates" in request.resource.data) || request.resource.data.tiebreakerTeamStates is map);
     }
 
     function hasValidTeamSessionShape() {

@@ -95,7 +95,6 @@ const pointMessages = [
 const ANSWER_WINDOW_MS = 5 * 60 * 60 * 1000;
 const ROUND_START_WINDOW_MS = DEFAULT_ROUND_START_WINDOW_MS;
 const EMERGENCY_JOIN_WINDOW_MS = 5 * 60 * 1000;
-const HIDDEN_YEARLY_RANKING_TEAM_IDS = new Set(["asiul"]);
 const RECENT_MANAGER_SESSION_KEY = "pqRecentManagerSession";
 const RECENT_PLAYER_SESSION_KEY = "pqRecentPlayerSession";
 const RECENT_PLAYER_SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -131,11 +130,6 @@ function normalizeQuizCode(code) {
 
 function normalizeRankingPassword(password) {
   return password.replace(/[^a-z0-9]/gi, "").toUpperCase().slice(0, 4);
-}
-
-function isHiddenFromYearlyRanking(teamIdOrName = "") {
-  const normalized = normalizeTeamName(teamIdOrName);
-  return HIDDEN_YEARLY_RANKING_TEAM_IDS.has(normalized);
 }
 
 function getInitialQuizCode() {
@@ -1193,23 +1187,41 @@ async function loadVoucherDocsForEvent({
         ...voucherDoc.data(),
         storageSource: "team",
       }))
-      .filter((voucher) => voucher.eventId === eventId),
+      .filter(
+        (voucher) =>
+          (voucher.eventId || getEventId(voucher.quizCode || "")) === eventId,
+      ),
   );
 
   return mergeVoucherDocs(eventDocs, teamDocs);
 }
 
-async function loadVoucherDocsForTeam(teamId) {
+async function loadVoucherDocsForTeam(teamId, eventIds = []) {
   if (!teamId) return [];
 
-  const teamSnapshot = await getDocs(collection(db, "teams", teamId, "vouchers"));
+  const normalizedEventIds = Array.from(new Set(eventIds.filter(Boolean)));
+  const [teamSnapshot, ...eventSnapshots] = await Promise.all([
+    getDocs(collection(db, "teams", teamId, "vouchers")),
+    ...normalizedEventIds.map((eventId) =>
+      getDocs(collection(db, "quizEvents", eventId, "vouchers")),
+    ),
+  ]);
   const teamDocs = teamSnapshot.docs.map((voucherDoc) => ({
     id: voucherDoc.id,
     ...voucherDoc.data(),
     storageSource: "team",
   }));
+  const eventDocs = eventSnapshots.flatMap((snapshot) =>
+    snapshot.docs
+      .map((voucherDoc) => ({
+        id: voucherDoc.id,
+        ...voucherDoc.data(),
+        storageSource: "event",
+      }))
+      .filter((voucher) => voucher.teamId === teamId),
+  );
 
-  return mergeVoucherDocs([], teamDocs);
+  return mergeVoucherDocs(eventDocs, teamDocs);
 }
 
 async function loadAllVoucherDocsFromFirestore(allSessions = [], teamProfiles = []) {
@@ -2157,6 +2169,7 @@ function App() {
   const [allVoucherDocs, setAllVoucherDocs] = useState([]);
   const [dailyRankingRows, setDailyRankingRows] = useState([]);
   const [dailyRankingManualOrder, setDailyRankingManualOrder] = useState([]);
+  const [eventRecords, setEventRecords] = useState([]);
   const [historicalDailyRankingDocs, setHistoricalDailyRankingDocs] = useState([]);
   const [globalRankingRows, setGlobalRankingRows] = useState([]);
   const [teamProfiles, setTeamProfiles] = useState([]);
@@ -2179,8 +2192,7 @@ function App() {
   const [quizManagerMessage, setQuizManagerMessage] = useState("");
   const [issuedTeamPassword, setIssuedTeamPassword] = useState(null);
   const syncedAnswerDraftsRef = useRef({});
-  const hasHydratedLobbyRoundRef = useRef(false);
-  const lastLobbyActiveRoundRef = useRef(null);
+  const lastLobbyActiveRoundRef = useRef({ lobbyCode: "", roundId: null });
   const shouldLoadArchiveData = Boolean(
     activeManager &&
       appView === "admin" &&
@@ -2322,33 +2334,23 @@ function App() {
 
   useEffect(() => {
     const lobbyRoundId = lobbyData?.activeRoundId;
+    const currentLobbyCode = sessionData?.lobbyCode || "";
 
     if (!lobbyRoundId) return;
     if (!quizRounds.some((round) => round.id === lobbyRoundId)) return;
-    if (!hasHydratedLobbyRoundRef.current) {
-      hasHydratedLobbyRoundRef.current = true;
-      lastLobbyActiveRoundRef.current = lobbyRoundId;
-      if (lobbyRoundId !== activeRoundId) {
-        setActiveRoundId(lobbyRoundId);
-      }
+    if (
+      lastLobbyActiveRoundRef.current.lobbyCode === currentLobbyCode &&
+      lastLobbyActiveRoundRef.current.roundId === lobbyRoundId
+    ) {
       return;
     }
 
-    const previousLobbyRoundId = lastLobbyActiveRoundRef.current;
-    const shouldFollowLobbyRound =
-      previousLobbyRoundId && activeRoundId === previousLobbyRoundId;
-
-    lastLobbyActiveRoundRef.current = lobbyRoundId;
-
-    if (shouldFollowLobbyRound && lobbyRoundId !== activeRoundId) {
-      setActiveRoundId(lobbyRoundId);
-    }
-  }, [activeRoundId, lobbyData?.activeRoundId, quizRounds]);
-
-  useEffect(() => {
-    hasHydratedLobbyRoundRef.current = false;
-    lastLobbyActiveRoundRef.current = null;
-  }, [sessionData?.lobbyCode]);
+    lastLobbyActiveRoundRef.current = {
+      lobbyCode: currentLobbyCode,
+      roundId: lobbyRoundId,
+    };
+    setActiveRoundId(lobbyRoundId);
+  }, [lobbyData?.activeRoundId, quizRounds, sessionData?.lobbyCode]);
 
   useEffect(() => {
     if (!sessionId || !sessionData?.lobbyCode) return undefined;
@@ -2595,6 +2597,19 @@ function App() {
       setAllTeamSessions(sessions);
     });
   }, [appView, shouldLoadArchiveData]);
+
+  useEffect(() => {
+    if (!shouldLoadArchiveData) return undefined;
+
+    return onSnapshot(collection(db, "quizEvents"), (snapshot) => {
+      setEventRecords(
+        snapshot.docs.map((eventDoc) => ({
+          eventId: eventDoc.id,
+          ...eventDoc.data(),
+        })),
+      );
+    });
+  }, [shouldLoadArchiveData]);
 
   useEffect(() => {
     if (!shouldLoadArchiveData && appView !== "vouchers") return undefined;
@@ -4968,6 +4983,71 @@ function App() {
     }
   }
 
+  async function saveTiebreakerSetup({ question, answer }) {
+    const cleanedQuestion = String(question || "").trim();
+    const numericAnswer = Number(answer);
+
+    if (!activeManager || !sessionData?.lobbyCode || !cleanedQuestion || !Number.isFinite(numericAnswer)) {
+      return { ok: false, message: "Bitte Schätzfrage und eine gültige Zahl als Antwort eintragen." };
+    }
+
+    try {
+      await setDoc(
+        getEventRef(sessionData.lobbyCode),
+        {
+          tiebreakerAnswer: numericAnswer,
+          tiebreakerQuestion: cleanedQuestion,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+      return { ok: true, message: "Schätzfrage gespeichert." };
+    } catch (error) {
+      console.error("TIEBREAKER SETUP ERROR:", error);
+      return { ok: false, message: `Schätzfrage konnte nicht gespeichert werden: ${error.message}` };
+    }
+  }
+
+  async function setTeamTiebreakerState({ teamId, teamName, action }) {
+    if (!activeManager || !sessionData?.lobbyCode || !teamId) {
+      return { ok: false, message: "Team konnte nicht aktualisiert werden." };
+    }
+
+    const question = String(lobbyData?.tiebreakerQuestion || "").trim();
+    const answer = Number(lobbyData?.tiebreakerAnswer);
+    if (!question || !Number.isFinite(answer)) {
+      return { ok: false, message: "Bitte zuerst Schätzfrage und richtige Antwort speichern." };
+    }
+
+    const currentState = lobbyData?.tiebreakerTeamStates?.[teamId] || {};
+    const nextState = {
+      ...currentState,
+      teamName: teamName || teamId,
+      questionVisible: true,
+      ...(action === "openAnswers"
+        ? { answersOpen: true, openedAt: serverTimestamp() }
+        : {}),
+    };
+
+    try {
+      await updateDoc(getEventRef(sessionData.lobbyCode), {
+        [`tiebreakerTeamStates.${teamId}`]: nextState,
+        tiebreakerStatus: "active",
+        updatedAt: serverTimestamp(),
+      });
+      return {
+        ok: true,
+        message:
+          action === "openAnswers"
+            ? `Antworten für ${teamName || teamId} geöffnet.`
+            : `Schätzfrage für ${teamName || teamId} angezeigt.`,
+      };
+    } catch (error) {
+      console.error("TIEBREAKER TEAM STATE ERROR:", error);
+      return { ok: false, message: `Team konnte nicht aktualisiert werden: ${error.message}` };
+    }
+  }
+
   async function startTiebreaker() {
     if (!activeManager || !sessionData?.lobbyCode) return;
 
@@ -5026,6 +5106,33 @@ function App() {
     if (!sessionId || !sessionData?.lobbyCode) return;
 
     const lobbyRef = getEventRef(sessionData.lobbyCode);
+    const teamState = lobbyData?.tiebreakerTeamStates?.[sessionId];
+
+    if (teamState?.questionVisible) {
+      try {
+        await runTransaction(db, async (transaction) => {
+          const lobbySnapshot = await transaction.get(lobbyRef);
+          const currentParticipant =
+            lobbySnapshot.data()?.tiebreakerParticipants?.[sessionId];
+
+          if (currentParticipant?.clientId && currentParticipant.clientId !== clientId) return;
+
+          transaction.update(lobbyRef, {
+            [`tiebreakerParticipants.${sessionId}`]: {
+              clientId,
+              playerName: sessionData.playerName || "Anonym",
+              joinedAt: serverTimestamp(),
+            },
+            [`tiebreakerReady.${sessionId}`]: true,
+            updatedAt: serverTimestamp(),
+          });
+        });
+      } catch (error) {
+        console.error("TIEBREAKER DEVICE CLAIM ERROR:", error);
+      }
+      return;
+    }
+
     const finalRound = getLastQuizRound(quizRounds);
     const questionPointsById = Object.fromEntries(
       Object.entries(questions).map(([questionId, question]) => [
@@ -5147,7 +5254,9 @@ function App() {
           lobbySnapshotData?.tiebreakerSubmissions?.[sessionId];
 
         if (currentSubmission) return;
-        if (lobbySnapshotData?.tiebreakerStatus !== "active") return;
+        const teamState = lobbySnapshotData?.tiebreakerTeamStates?.[sessionId];
+        if (teamState?.questionVisible && !teamState?.answersOpen) return;
+        if (!teamState?.questionVisible && lobbySnapshotData?.tiebreakerStatus !== "active") return;
         if (!participant || participant.clientId !== clientId) return;
 
         transaction.update(lobbyRef, {
@@ -5967,6 +6076,8 @@ function App() {
           onSaveHistoricalEventRanking={saveHistoricalEventRanking}
           onSavePubQuiz={savePubQuiz}
           onSetAutomaticRoundUnlock={setAutomaticRoundUnlock}
+          onSaveTiebreakerSetup={saveTiebreakerSetup}
+          onSetTeamTiebreakerState={setTeamTiebreakerState}
           onSubmitManagerAnswerForTeam={submitManagerAnswerForTeam}
           onUpdateTeamPodiumExclusion={updateTeamPodiumExclusion}
           onUpdateTeamQuestionScore={updateTeamQuestionScore}
@@ -7483,9 +7594,7 @@ function RankingScreen({
       })),
     [editableDailyRows, lobbyData],
   );
-  const visibleYearlyTeams = yearlyTeams.filter(
-    (team) => !isHiddenFromYearlyRanking(team.id || team.teamName),
-  );
+  const visibleYearlyTeams = yearlyTeams;
   const rankingTeams = rankingTab === "daily" ? dailyTeams : visibleYearlyTeams;
   const hasUnsavedDailyOrder =
     editableDailyRows.map((row) => row.teamId).join("|") !==
@@ -8132,6 +8241,10 @@ function VoucherScreen({
     sessionData?.teamId || teamSessionId || sessionData?.teamNameNormalized || "";
   const teamProfile = teamProfiles.find((profile) => profile.id === teamId);
   const teamName = sessionData?.teamName || teamProfile?.teamName || teamProfile?.name || "";
+  const teamEventIds = Array.from(
+    new Set(teamHistorySessions.map((session) => session.eventId).filter(Boolean)),
+  );
+  const teamEventIdsKey = teamEventIds.join("|");
   const effectiveVoucherDocs = scopedVoucherDocs.length > 0 ? scopedVoucherDocs : allVoucherDocs;
   const vouchers = buildVoucherEntries(teamHistorySessions, effectiveVoucherDocs, pubQuizzes, {
     visibleTeamId: teamId || null,
@@ -8155,7 +8268,7 @@ function VoucherScreen({
 
     async function refreshTeamVouchers() {
       try {
-        const voucherDocs = await loadVoucherDocsForTeam(teamId);
+        const voucherDocs = await loadVoucherDocsForTeam(teamId, teamEventIds);
         if (!cancelled) {
           setScopedVoucherDocs(voucherDocs);
         }
@@ -8166,15 +8279,22 @@ function VoucherScreen({
 
     refreshTeamVouchers();
 
-    const unsubscribe = onSnapshot(collection(db, "teams", teamId, "vouchers"), () => {
-      refreshTeamVouchers();
-    });
+    const unsubscribeFns = [
+      onSnapshot(collection(db, "teams", teamId, "vouchers"), () => {
+        refreshTeamVouchers();
+      }),
+      ...teamEventIds.map((eventId) =>
+        onSnapshot(collection(db, "quizEvents", eventId, "vouchers"), () => {
+          refreshTeamVouchers();
+        }),
+      ),
+    ];
 
     return () => {
       cancelled = true;
-      unsubscribe();
+      unsubscribeFns.forEach((unsubscribe) => unsubscribe());
     };
-  }, [teamId]);
+  }, [teamEventIdsKey, teamId]);
 
   return (
     <main style={pageStyle}>
@@ -8347,6 +8467,8 @@ function AdminScreen({
   onDeletePubQuiz,
   onDeleteVoucherAssignment,
   onSetAutomaticRoundUnlock,
+  onSaveTiebreakerSetup,
+  onSetTeamTiebreakerState,
   onOpenAdmin,
   onOpenFaq,
   onOpenMain,
@@ -8488,6 +8610,8 @@ function AdminScreen({
             onReopenNewRegistrations={onReopenNewRegistrations}
             onRoundChange={onRoundChange}
             onSetAutomaticRoundUnlock={onSetAutomaticRoundUnlock}
+            onSaveTiebreakerSetup={onSaveTiebreakerSetup}
+            onSetTeamTiebreakerState={onSetTeamTiebreakerState}
             onSubmitManagerAnswerForTeam={onSubmitManagerAnswerForTeam}
             onUpdateTeamPodiumExclusion={onUpdateTeamPodiumExclusion}
             onUpdateTeamQuestionScore={onUpdateTeamQuestionScore}
@@ -8518,6 +8642,8 @@ function AdminScreen({
             allTeamSessions={allTeamSessions}
             allVoucherDocs={allVoucherDocs}
             dailyRankingDocs={historicalDailyRankingDocs}
+            eventRecords={eventRecords}
+            globalRankingRows={globalRankingRows}
             onCreateVoucherAssignment={onCreateVoucherAssignment}
             onDeleteVoucherAssignment={onDeleteVoucherAssignment}
             onSaveEventRanking={onSaveHistoricalEventRanking}
@@ -8734,6 +8860,8 @@ function VoucherDirectory({
   allTeamSessions = [],
   allVoucherDocs = [],
   dailyRankingDocs = [],
+  eventRecords = [],
+  globalRankingRows = [],
   onCreateVoucherAssignment,
   onDeleteVoucherAssignment,
   onSaveEventRanking,
@@ -8821,7 +8949,7 @@ function VoucherDirectory({
   });
   const normalizedSearchTerm = normalizeTeamName(searchTerm || "");
   const eventSummaries = Array.from(
-    [...allTeamSessions, ...allVoucherDocs].reduce((map, entry) => {
+    [...eventRecords, ...allTeamSessions, ...allVoucherDocs].reduce((map, entry) => {
       const eventId = entry.eventId || getEventId(entry.quizCode || entry.lobbyCode || "");
 
       if (!eventId) return map;
@@ -8830,12 +8958,29 @@ function VoucherDirectory({
         eventId,
         quizCode: entry.quizCode || entry.lobbyCode || "",
         quizLabel: getQuizLabelForSession(entry, pubQuizzes),
-        awardedAt: entry.awardedAt || getCompletionValue(entry) || entry.createdAt || null,
+        awardedAt:
+          entry.awardedAt ||
+          getCompletionValue(entry) ||
+          entry.closedAt ||
+          entry.startedAt ||
+          entry.createdAt ||
+          null,
       };
       const nextAwardedAt =
-        getTimestampMs(entry.awardedAt || getCompletionValue(entry) || entry.createdAt) >
+        getTimestampMs(
+          entry.awardedAt ||
+            getCompletionValue(entry) ||
+            entry.closedAt ||
+            entry.startedAt ||
+            entry.createdAt,
+        ) >
         getTimestampMs(current.awardedAt)
-          ? entry.awardedAt || getCompletionValue(entry) || entry.createdAt || null
+          ? entry.awardedAt ||
+            getCompletionValue(entry) ||
+            entry.closedAt ||
+            entry.startedAt ||
+            entry.createdAt ||
+            null
           : current.awardedAt;
 
       map.set(eventId, {
@@ -8864,7 +9009,6 @@ function VoucherDirectory({
     ).length;
     const sessionCount = sessionCountByEvent.get(event.eventId) || 0;
 
-    if (voucherCount === 0 && sessionCount === 0) return false;
     if (!normalizedSearchTerm) return true;
 
     return normalizeTeamName(
@@ -8932,6 +9076,24 @@ function VoucherDirectory({
       }),
     )).values(),
   );
+  const yearlyRankingTeamChoices =
+    globalRankingRows.length > 0
+      ? globalRankingRows.map((row) => ({
+          id: row.teamId,
+          teamId: row.teamId,
+          teamName: row.teamName || row.teamId,
+          totalPoints: Number(row.totalGlobalPoints) || 0,
+        }))
+      : teamDirectory
+          .filter((team) => team.rankingOptIn)
+          .map((team) => ({
+            id: team.id,
+            teamId: team.id,
+            teamName: team.teamName,
+            totalPoints: Number(team.totalPoints) || 0,
+          }));
+  const selectedEventTeamChoices =
+    selectedEventSessions.length > 0 ? selectedEventSessions : yearlyRankingTeamChoices;
   const selectedEventTeamIds = Array.from(
     new Set(selectedEventSessions.map((session) => session.teamId || session.id).filter(Boolean)),
   );
@@ -8974,6 +9136,10 @@ function VoucherDirectory({
         { visibleTeamId: selectedTeam.id },
       )
     : [];
+  const selectedTeamEventIds = Array.from(
+    new Set((selectedTeam?.sessions || []).map((session) => session.eventId).filter(Boolean)),
+  );
+  const selectedTeamEventIdsKey = selectedTeamEventIds.join("|");
 
   useEffect(() => {
     if (!visibleEventSummaries.some((event) => event.eventId === selectedEventId)) {
@@ -8988,10 +9154,12 @@ function VoucherDirectory({
   }, [selectedTeamId, visibleVoucherTeams]);
 
   useEffect(() => {
-    if (!selectedEventSessions.some((team) => (team.teamId || team.id) === selectedCreateTeamId)) {
-      setSelectedCreateTeamId(selectedEventSessions[0]?.teamId || selectedEventSessions[0]?.id || "");
+    if (!selectedEventTeamChoices.some((team) => (team.teamId || team.id) === selectedCreateTeamId)) {
+      setSelectedCreateTeamId(
+        selectedEventTeamChoices[0]?.teamId || selectedEventTeamChoices[0]?.id || "",
+      );
     }
-  }, [selectedCreateTeamId, selectedEventSessions]);
+  }, [selectedCreateTeamId, selectedEventTeamChoices]);
 
   useEffect(() => {
     if (!selectedEvent?.eventId) {
@@ -9057,7 +9225,10 @@ function VoucherDirectory({
 
     async function refreshSelectedTeamVouchers() {
       try {
-        const voucherDocs = await loadVoucherDocsForTeam(selectedTeam.id);
+        const voucherDocs = await loadVoucherDocsForTeam(
+          selectedTeam.id,
+          selectedTeamEventIds,
+        );
         if (!cancelled) {
           setSelectedTeamVoucherDocs(voucherDocs);
         }
@@ -9068,18 +9239,22 @@ function VoucherDirectory({
 
     refreshSelectedTeamVouchers();
 
-    const unsubscribe = onSnapshot(
-      collection(db, "teams", selectedTeam.id, "vouchers"),
-      () => {
+    const unsubscribeFns = [
+      onSnapshot(collection(db, "teams", selectedTeam.id, "vouchers"), () => {
         refreshSelectedTeamVouchers();
-      },
-    );
+      }),
+      ...selectedTeamEventIds.map((eventId) =>
+        onSnapshot(collection(db, "quizEvents", eventId, "vouchers"), () => {
+          refreshSelectedTeamVouchers();
+        }),
+      ),
+    ];
 
     return () => {
       cancelled = true;
-      unsubscribe();
+      unsubscribeFns.forEach((unsubscribe) => unsubscribe());
     };
-  }, [selectedTeam?.id]);
+  }, [selectedTeam?.id, selectedTeamEventIdsKey]);
 
   function moveSelectedEventTeam(teamId, direction) {
     if (!selectedEvent?.eventId) return;
@@ -9128,7 +9303,7 @@ function VoucherDirectory({
   }
 
   async function handleCreateVoucher() {
-    const targetTeam = selectedEventSessions.find(
+    const targetTeam = selectedEventTeamChoices.find(
       (team) => (team.teamId || team.id) === selectedCreateTeamId,
     );
 
@@ -9411,7 +9586,7 @@ function VoucherDirectory({
                     onChange={(event) => setSelectedCreateTeamId(event.target.value)}
                     style={inputStyle}
                   >
-                    {selectedEventSessions.map((team) => (
+                    {selectedEventTeamChoices.map((team) => (
                       <option key={team.teamId || team.id} value={team.teamId || team.id}>
                         {team.teamName} - {team.totalPoints || 0} Punkte
                         {team.rankDaily ? ` - Platz ${team.rankDaily}` : ""}
@@ -9434,7 +9609,7 @@ function VoucherDirectory({
                 </label>
                 <button
                   type="button"
-                  disabled={!canEditVouchers || !selectedEventSessions.length}
+                  disabled={!canEditVouchers || !selectedEventTeamChoices.length}
                   onClick={handleCreateVoucher}
                   style={{
                     alignSelf: "end",
@@ -9442,17 +9617,23 @@ function VoucherDirectory({
                     border: "none",
                     borderRadius: 12,
                     background:
-                      canEditVouchers && selectedEventSessions.length ? "#22c55e" : "#334155",
+                      canEditVouchers && selectedEventTeamChoices.length ? "#22c55e" : "#334155",
                     color:
-                      canEditVouchers && selectedEventSessions.length ? "#0b1220" : "#94a3b8",
+                      canEditVouchers && selectedEventTeamChoices.length ? "#0b1220" : "#94a3b8",
                     fontWeight: 700,
                     cursor:
-                      canEditVouchers && selectedEventSessions.length ? "pointer" : "not-allowed",
+                      canEditVouchers && selectedEventTeamChoices.length ? "pointer" : "not-allowed",
                   }}
                 >
                   Gutschein anlegen
                 </button>
               </div>
+              {selectedEventSessions.length === 0 && selectedEventTeamChoices.length > 0 && (
+                <p style={{ margin: "10px 0 0", color: "#94a3b8", fontSize: 13 }}>
+                  Noch keine Team-Teilnahme fuer dieses Event gespeichert. Der Gutschein kann
+                  an jedes Team aus dem Jahresranking vergeben werden.
+                </p>
+              )}
 
               <h4 style={{ marginBottom: 10 }}>Aktuelle Gutscheine</h4>
               {selectedEventVouchers.length === 0 ? (
@@ -11016,6 +11197,8 @@ function LiveControlPanel({
   onReopenNewRegistrations,
   onRoundChange,
   onSetAutomaticRoundUnlock,
+  onSaveTiebreakerSetup,
+  onSetTeamTiebreakerState,
   onSubmitManagerAnswerForTeam,
   onUpdateTeamPodiumExclusion,
   onUpdateTeamQuestionScore,
@@ -11026,6 +11209,7 @@ function LiveControlPanel({
   selectedRound,
   teamStatuses,
 }) {
+  const [liveTab, setLiveTab] = useState(selectedRound.id);
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [scoreDraft, setScoreDraft] = useState("");
   const [scoreNoteDraft, setScoreNoteDraft] = useState("");
@@ -11078,6 +11262,23 @@ function LiveControlPanel({
     teamStatuses.length > 0 && selectedRoundCompletionRate >= 0.8;
   const selectedQuestionIds = selectedQuestions.map((question) => question.id);
   const canEditScores = Boolean(canManagerEditScores(activeManager) && onUpdateTeamScore);
+
+  if (liveTab === "tiebreaker") {
+    return (
+      <LiveTiebreakerPanel
+        lobbyData={lobbyData}
+        now={now}
+        onOpenRound={(roundId) => {
+          setLiveTab(roundId);
+          onRoundChange(roundId);
+        }}
+        onSaveSetup={onSaveTiebreakerSetup}
+        onSetTeamState={onSetTeamTiebreakerState}
+        quizRounds={quizRounds}
+        teamStatuses={teamStatuses}
+      />
+    );
+  }
 
   useEffect(() => {
     if (!visibleTeamStatuses.some((team) => team.id === selectedTeamId)) {
@@ -11207,7 +11408,10 @@ function LiveControlPanel({
             return (
               <button
                 key={round.id}
-                onClick={() => onRoundChange(round.id)}
+                onClick={() => {
+                  setLiveTab(round.id);
+                  onRoundChange(round.id);
+                }}
                 style={{
                   padding: "10px 14px",
                   borderRadius: 999,
@@ -11221,6 +11425,20 @@ function LiveControlPanel({
               </button>
             );
           })}
+          <button
+            type="button"
+            onClick={() => setLiveTab("tiebreaker")}
+            style={{
+              padding: "10px 14px",
+              borderRadius: 999,
+              border: "1px solid #f59e0b",
+              background: "#451a03",
+              color: "#fde68a",
+              fontWeight: 700,
+            }}
+          >
+            Schätzfrage
+          </button>
         </div>
 
         <section
@@ -12888,6 +13106,136 @@ function WaitingRoomScreen({
   );
 }
 
+function LiveTiebreakerPanel({
+  lobbyData,
+  now,
+  onOpenRound,
+  onSaveSetup,
+  onSetTeamState,
+  quizRounds,
+  teamStatuses,
+}) {
+  const [question, setQuestion] = useState(lobbyData?.tiebreakerQuestion || "");
+  const [answer, setAnswer] = useState(
+    lobbyData?.tiebreakerAnswer === undefined || lobbyData?.tiebreakerAnswer === null
+      ? ""
+      : String(lobbyData.tiebreakerAnswer),
+  );
+  const [selectedTeamId, setSelectedTeamId] = useState(null);
+  const [message, setMessage] = useState("");
+  const selectedTeam =
+    teamStatuses.find((team) => team.id === selectedTeamId) || teamStatuses[0] || null;
+  const submissions = teamStatuses
+    .map((team) => {
+      const submission = getTiebreakerSubmission(lobbyData, team.id);
+      const distance = getTiebreakerDistance(lobbyData, team.id);
+
+      return submission
+        ? {
+            ...team,
+            distance: distance ?? Number.POSITIVE_INFINITY,
+            submittedAt: getTimestampMs(submission.submittedAt),
+            submission,
+          }
+        : null;
+    })
+    .filter(Boolean)
+    .sort(
+      (a, b) =>
+        a.distance - b.distance ||
+        a.submittedAt - b.submittedAt ||
+        a.teamName.localeCompare(b.teamName),
+    );
+
+  async function saveSetup() {
+    const result = await onSaveSetup?.({ question, answer });
+    setMessage(result?.message || "");
+  }
+
+  async function updateSelectedTeam(action) {
+    if (!selectedTeam) return;
+
+    const result = await onSetTeamState?.({
+      action,
+      teamId: selectedTeam.id,
+      teamName: selectedTeam.teamName,
+    });
+    setMessage(result?.message || "");
+  }
+
+  return (
+    <section style={{ marginTop: 24 }}>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {quizRounds.map((round) => (
+          <button key={round.id} type="button" onClick={() => onOpenRound(round.id)}>
+            {round.title}
+          </button>
+        ))}
+        <button type="button" style={{ background: "#f59e0b", color: "#111827" }}>
+          Schätzfrage
+        </button>
+      </div>
+
+      <section style={{ marginTop: 24, padding: 18, border: "1px solid #f59e0b", borderRadius: 14, background: "#451a03" }}>
+        <h2 style={{ marginTop: 0 }}>Schätzfrage steuern</h2>
+        <p style={{ color: "#fed7aa" }}>
+          Frage und richtige Antwort speichern, dann Teams einzeln auswählen: erst die Frage zeigen, anschließend Antworten öffnen.
+        </p>
+        <label style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+          <span>Schätzfrage</span>
+          <textarea value={question} onChange={(event) => setQuestion(event.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical" }} />
+        </label>
+        <label style={{ display: "grid", gap: 6, marginBottom: 12 }}>
+          <span>Richtige Antwort (Zahl)</span>
+          <input type="number" step="any" value={answer} onChange={(event) => setAnswer(event.target.value)} style={inputStyle} />
+        </label>
+        <button type="button" onClick={saveSetup}>Schätzfrage speichern</button>
+        {message && <p style={{ color: "#fde68a" }}>{message}</p>}
+      </section>
+
+      <section style={{ marginTop: 18, display: "grid", gridTemplateColumns: "minmax(220px, .8fr) minmax(0, 1.2fr)", gap: 16 }}>
+        <div style={{ display: "grid", gap: 8, alignSelf: "start" }}>
+          {teamStatuses.map((team) => {
+            const state = lobbyData?.tiebreakerTeamStates?.[team.id];
+            const submission = getTiebreakerSubmission(lobbyData, team.id);
+            return (
+              <button key={team.id} type="button" onClick={() => setSelectedTeamId(team.id)} style={{ textAlign: "left", padding: 12, borderRadius: 10, border: `1px solid ${selectedTeam?.id === team.id ? "#f59e0b" : "#334155"}`, background: "#0b1220", color: "#e5e7eb" }}>
+                <strong>{team.teamName}</strong>
+                <span style={{ display: "block", color: "#94a3b8", marginTop: 4 }}>
+                  {submission ? "abgegeben" : state?.answersOpen ? "Antworten offen" : state?.questionVisible ? "Frage sichtbar" : "noch geschlossen"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ padding: 16, border: "1px solid #334155", borderRadius: 14, background: "#0b1220" }}>
+          {selectedTeam ? (
+            <>
+              <h3 style={{ marginTop: 0 }}>{selectedTeam.teamName}</h3>
+              <button type="button" onClick={() => updateSelectedTeam("showQuestion")}>Frage zeigen</button>
+              <button type="button" onClick={() => updateSelectedTeam("openAnswers")} style={{ marginLeft: 10 }}>Antworten öffnen</button>
+              {lobbyData?.tiebreakerTeamStates?.[selectedTeam.id]?.answersOpen && !getTiebreakerSubmission(lobbyData, selectedTeam.id) && (
+                <p style={{ fontSize: 32, fontWeight: 800, color: "#fde68a" }}>
+                  {formatStopwatch(now - getTimestampMs(lobbyData.tiebreakerTeamStates[selectedTeam.id].openedAt))}
+                </p>
+              )}
+            </>
+          ) : <p>Kein Team angemeldet.</p>}
+        </div>
+      </section>
+
+      <section style={{ marginTop: 18, padding: 16, border: "1px solid #334155", borderRadius: 14, background: "#0b1220" }}>
+        <h3 style={{ marginTop: 0 }}>Fertige Reihenfolge (nur Personal)</h3>
+        {submissions.length === 0 ? <p style={{ color: "#94a3b8" }}>Noch keine Schätzung abgegeben.</p> : submissions.map((team, index) => (
+          <p key={team.id} style={{ margin: "8px 0" }}>
+            <strong>{index + 1}. {team.teamName}</strong> - {team.submission.estimate} - Abstand {team.distance} - {formatStopwatch(team.submittedAt - getTimestampMs(lobbyData?.tiebreakerTeamStates?.[team.id]?.openedAt || lobbyData?.tiebreakerStartedAt))}
+          </p>
+        ))}
+      </section>
+    </section>
+  );
+}
+
 function TeamList({ registeredTeams }) {
   return (
     <section style={{ marginTop: 28 }}>
@@ -13201,7 +13549,8 @@ function QuizScreen({
         </section>
       )}
 
-      {tiebreakerEligible && tiebreakerFinalRoundFinished && allTeamsReadyForRanking && (
+      {(lobbyData?.tiebreakerTeamStates?.[sessionId]?.questionVisible ||
+        (tiebreakerEligible && tiebreakerFinalRoundFinished && allTeamsReadyForRanking)) && (
         <TiebreakerTeamPanel
           lobbyData={lobbyData}
           clientId={tiebreakerClientId}
@@ -13379,8 +13728,12 @@ function TiebreakerTeamPanel({
   teamName,
 }) {
   const [estimate, setEstimate] = useState("");
+  const teamState = lobbyData?.tiebreakerTeamStates?.[sessionId] || null;
+  const managerControlled = Boolean(teamState?.questionVisible);
   const isReady = Boolean(lobbyData?.tiebreakerReady?.[sessionId]);
-  const isActive = lobbyData?.tiebreakerStatus === "active";
+  const isActive = managerControlled
+    ? Boolean(teamState?.answersOpen)
+    : lobbyData?.tiebreakerStatus === "active";
   const participant = getTiebreakerParticipant(lobbyData, sessionId);
   const claimedByAnotherDevice =
     Boolean(participant?.clientId) && participant.clientId !== clientId;
@@ -13390,7 +13743,7 @@ function TiebreakerTeamPanel({
   const elapsedMs = isActive
     ? (submission
         ? getTimestampMs(submission.submittedAt)
-        : now) - getTimestampMs(lobbyData?.tiebreakerStartedAt)
+        : now) - getTimestampMs(teamState?.openedAt || lobbyData?.tiebreakerStartedAt)
     : 0;
 
   async function handleSubmit(e) {
@@ -13415,16 +13768,16 @@ function TiebreakerTeamPanel({
         {teamName} ist im Gleichstand um die Top 3. Nur die erste Abgabe eures
         Teams zählt.
       </p>
-      {lobbyData?.tiebreakerQuestion && (
+      {lobbyData?.tiebreakerQuestion && !submission && (
         <p style={{ fontSize: 20, fontWeight: 700 }}>{lobbyData.tiebreakerQuestion}</p>
       )}
       {isActive && (
-        <p style={{ margin: "0 0 12px", fontSize: 26, fontWeight: 700 }}>
+        <p style={{ margin: "0 0 16px", fontSize: 56, fontWeight: 800, letterSpacing: "0.03em" }}>
           {formatStopwatch(elapsedMs)}
         </p>
       )}
 
-      {!finalRoundFinished && !isReady && !submission && (
+      {!managerControlled && !finalRoundFinished && !isReady && !submission && (
         <p style={{ marginBottom: 0 }}>
           Ihr könnt beitreten, sobald eure dritte Runde fertig ist.
         </p>
@@ -13437,7 +13790,7 @@ function TiebreakerTeamPanel({
         </p>
       )}
 
-      {finalRoundFinished && !isReady && !claimedByAnotherDevice && !submission && (
+      {(managerControlled || finalRoundFinished) && !isReady && !claimedByAnotherDevice && !submission && (
         <button
           onClick={onReady}
           style={{
@@ -13493,7 +13846,7 @@ function TiebreakerTeamPanel({
         <p style={{ marginBottom: 0 }}>
           Abgegeben: {submission.estimate}
           {getTimestampMs(submission.submittedAt) &&
-          getTimestampMs(lobbyData?.tiebreakerStartedAt)
+          getTimestampMs(teamState?.openedAt || lobbyData?.tiebreakerStartedAt)
             ? ` - Zeit ${formatStopwatch(elapsedMs)}`
             : ""}
           {Number.isFinite(answer) && distance !== null
