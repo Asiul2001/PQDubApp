@@ -6055,6 +6055,7 @@ function App() {
           allTeams={allTeams}
           allTeamSessions={allTeamSessions}
           allVoucherDocs={allVoucherDocs}
+          eventRecords={eventRecords}
           historicalDailyRankingDocs={historicalDailyRankingDocs}
           globalRankingRows={globalRankingRows}
           lobbyData={lobbyData}
@@ -8454,6 +8455,7 @@ function AdminScreen({
   allTeams,
   allTeamSessions,
   allVoucherDocs,
+  eventRecords,
   feedbackEntries,
   historicalDailyRankingDocs,
   globalRankingRows,
