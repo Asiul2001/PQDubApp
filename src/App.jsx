@@ -980,7 +980,9 @@ function buildDailyRankingRows(registeredTeams = [], lobbyData = null) {
 }
 
 function buildHistoricalEventRankingRows(teams = [], savedRows = []) {
-  const baseRows = [...teams]
+  const safeTeams = Array.isArray(teams) ? teams : [];
+  const safeSavedRows = Array.isArray(savedRows) ? savedRows : [];
+  const baseRows = [...safeTeams]
     .sort((a, b) => {
       const rankDifference =
         (Number(a.rankDaily) || Number.MAX_SAFE_INTEGER) -
@@ -1004,7 +1006,7 @@ function buildHistoricalEventRankingRows(teams = [], savedRows = []) {
     }))
     .filter((row) => Boolean(row.teamId));
 
-  if (!savedRows.length) {
+  if (!safeSavedRows.length) {
     return baseRows.map((row, index) => ({
       ...row,
       rank: index + 1,
@@ -1014,7 +1016,7 @@ function buildHistoricalEventRankingRows(teams = [], savedRows = []) {
 
   return applyManualRankingOrder(
     baseRows,
-    savedRows.map((row) => row.teamId).filter(Boolean),
+    safeSavedRows.map((row) => row?.teamId).filter(Boolean),
   );
 }
 
