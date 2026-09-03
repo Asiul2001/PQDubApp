@@ -11263,23 +11263,6 @@ function LiveControlPanel({
   const selectedQuestionIds = selectedQuestions.map((question) => question.id);
   const canEditScores = Boolean(canManagerEditScores(activeManager) && onUpdateTeamScore);
 
-  if (liveTab === "tiebreaker") {
-    return (
-      <LiveTiebreakerPanel
-        lobbyData={lobbyData}
-        now={now}
-        onOpenRound={(roundId) => {
-          setLiveTab(roundId);
-          onRoundChange(roundId);
-        }}
-        onSaveSetup={onSaveTiebreakerSetup}
-        onSetTeamState={onSetTeamTiebreakerState}
-        quizRounds={quizRounds}
-        teamStatuses={teamStatuses}
-      />
-    );
-  }
-
   useEffect(() => {
     if (!visibleTeamStatuses.some((team) => team.id === selectedTeamId)) {
       setSelectedTeamId(visibleTeamStatuses[0]?.id || null);
@@ -11397,6 +11380,23 @@ function LiveControlPanel({
     });
 
     setPodiumMessage(result.message);
+  }
+
+  if (liveTab === "tiebreaker") {
+    return (
+      <LiveTiebreakerPanel
+        lobbyData={lobbyData}
+        now={now}
+        onOpenRound={(roundId) => {
+          setLiveTab(roundId);
+          onRoundChange(roundId);
+        }}
+        onSaveSetup={onSaveTiebreakerSetup}
+        onSetTeamState={onSetTeamTiebreakerState}
+        quizRounds={quizRounds}
+        teamStatuses={teamStatuses}
+      />
+    );
   }
 
   return (
