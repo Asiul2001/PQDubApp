@@ -49,6 +49,55 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
+      # A cancelled Pages publish can remain active server-side and block every new deploy.
+      - name: Clear the interrupted Pages deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const staleDeployment = '91b37299ecd95486f91cdcbe9b0a0c1defc3b7fd';
+            const { owner, repo } = context.repo;
+            const endpoint = 'GET /repos/{owner}/{repo}/pages/deployments/{pages_deployment_id}';
+
+            let status;
+            try {
+              ({ data: status } = await github.request(endpoint, {
+                owner,
+                repo,
+                pages_deployment_id: staleDeployment,
+              }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.info('The interrupted deployment is already gone.');
+              return;
+            }
+
+            if (status.status !== 'deployment_in_progress') {
+              core.info(`Interrupted deployment is already ${status.status}.`);
+              return;
+            }
+
+            core.warning('Cancelling the stale GitHub Pages deployment.');
+            await github.request('POST /repos/{owner}/{repo}/pages/deployments/{pages_deployment_id}/cancel', {
+              owner,
+              repo,
+              pages_deployment_id: staleDeployment,
+            });
+
+            for (let attempt = 0; attempt < 24; attempt += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 5000));
+              ({ data: status } = await github.request(endpoint, {
+                owner,
+                repo,
+                pages_deployment_id: staleDeployment,
+              }));
+              if (status.status !== 'deployment_in_progress') {
+                core.info(`Interrupted deployment cleared: ${status.status}.`);
+                return;
+              }
+            }
+
+            core.setFailed('The interrupted Pages deployment did not clear within two minutes.');
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
