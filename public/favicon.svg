@@ -1,22 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#05233a"/>
-      <stop offset="1" stop-color="#010814"/>
-    </linearGradient>
-    <linearGradient id="beer" x1="0" y1="0" x2="0" y2="1">
-      <stop stop-color="#ffd976"/>
-      <stop offset=".2" stop-color="#fff2cf"/>
-      <stop offset=".23" stop-color="#40210d"/>
-      <stop offset="1" stop-color="#090706"/>
-    </linearGradient>
+    <linearGradient id="night" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#083e54"/><stop offset=".52" stop-color="#031b31"/><stop offset="1" stop-color="#010812"/></linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#e7a82e"/><stop offset=".18" stop-color="#ffc958"/><stop offset=".24" stop-color="#4a210b"/><stop offset="1" stop-color="#160703"/></linearGradient>
+    <linearGradient id="foam" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff9df"/><stop offset="1" stop-color="#f7c85a"/></linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#00e8e7"/><stop offset="1" stop-color="#0099d9"/></linearGradient>
+    <filter id="glow" x="-35%" y="-35%" width="170%" height="170%"><feGaussianBlur stdDeviation="10" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="18"/></filter>
   </defs>
-  <rect width="64" height="64" fill="#010814"/>
-  <rect width="64" height="64" rx="15" fill="url(#bg)"/>
-  <circle cx="32" cy="30" r="24" fill="none" stroke="#00dfea" stroke-width="2.5" opacity=".8"/>
-  <path d="M19 17h26l-2 31H21z" fill="url(#beer)" stroke="#ffc45c" stroke-width="1.4"/>
-  <path d="M20 18c1-6 5-8 11-6 4-4 10-2 13 6" fill="#fff4d8" stroke="#ffd36e" stroke-width="1.3"/>
-  <path d="M29 27c0-4 7-5 8-1 1 3-3 4-4 6v3" fill="none" stroke="#ffd565" stroke-linecap="round" stroke-width="3.4"/>
-  <circle cx="33" cy="40" r="2" fill="#ffd565"/>
-  <text x="32" y="57" fill="#7eeeff" font-family="Arial,sans-serif" font-size="12" font-weight="700" text-anchor="middle">PQ</text>
+  <rect width="512" height="512" fill="#010812"/>
+  <rect width="512" height="512" rx="112" fill="#010812"/>
+  <rect x="10" y="10" width="492" height="492" rx="104" fill="url(#night)" stroke="#0b5670" stroke-width="3"/>
+  <ellipse cx="256" cy="213" rx="170" ry="155" fill="#00dfe9" opacity=".13" filter="url(#soft)"/>
+  <circle cx="256" cy="226" r="177" fill="none" stroke="url(#cyan)" stroke-width="14" opacity=".9" filter="url(#glow)"/>
+  <circle cx="256" cy="226" r="151" fill="none" stroke="#8af9ff" stroke-width="2" opacity=".35"/>
+  <path d="M162 141h188l-15 228H177z" fill="url(#glass)" stroke="#ffd76f" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M177 159h158l-5 60H182z" fill="#ffda78" opacity=".3"/>
+  <path d="M165 147c0-36 19-57 55-54 24-24 61-16 76 9 34-4 54 16 51 45z" fill="url(#foam)" stroke="#fff3c4" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M176 145c23-16 47-19 72-8 24-20 54-17 82 8" fill="none" stroke="#fffdf1" stroke-width="11" stroke-linecap="round" opacity=".9"/>
+  <path d="M205 169c9 58 7 129-2 169" fill="none" stroke="#fff3ce" stroke-width="12" stroke-linecap="round" opacity=".34"/>
+  <path d="M226 204c0-29 49-42 70-13 17 24-2 44-26 61-10 7-14 16-14 30" fill="none" stroke="#ffe178" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+  <circle cx="256" cy="338" r="16" fill="#ffe178" filter="url(#glow)"/>
+  <path d="M153 277l-46 24M153 319l-51 2M359 277l46 24M359 319l51 2" stroke="#ffe178" stroke-width="12" stroke-linecap="round" opacity=".9"/>
+  <text x="256" y="449" fill="url(#cyan)" font-family="Verdana, sans-serif" font-size="94" font-weight="900" letter-spacing="-12" text-anchor="middle" filter="url(#glow)">PQ</text>
+  <path d="M157 430c13-20 31-17 36 0 8-17 28-17 40 0-3 23-25 39-38 48-15-10-34-25-38-48z" fill="#20c978" stroke="#8bffc0" stroke-width="3" opacity=".9"/>
+  <path d="M355 430c13-20 31-17 36 0 8-17 28-17 40 0-3 23-25 39-38 48-15-10-34-25-38-48z" fill="#20c978" stroke="#8bffc0" stroke-width="3" opacity=".9"/>
 </svg>
