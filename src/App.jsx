@@ -2686,7 +2686,9 @@ function App() {
   }, [shouldLoadArchiveData]);
 
   useEffect(() => {
-    if (!shouldLoadArchiveData && appView !== "vouchers") return undefined;
+    if (!shouldLoadArchiveData && appView !== "vouchers" && !shouldLoadGlobalTeamIndex) {
+      return undefined;
+    }
 
     let cancelled = false;
     const quizEventsRef = collection(db, "quizEvents");
@@ -2726,7 +2728,7 @@ function App() {
       cancelled = true;
       unsubscribe();
     };
-  }, [appView, shouldLoadArchiveData]);
+  }, [appView, shouldLoadArchiveData, shouldLoadGlobalTeamIndex]);
 
   useEffect(() => {
     if (!shouldLoadArchiveData && appView !== "vouchers") return undefined;
@@ -6441,6 +6443,7 @@ function App() {
           registeredTeams={registeredTeams}
           sessionData={sessionData}
           sessionId={sessionId}
+          teamProfiles={teamProfiles}
         />
         {issuedTeamPasswordModal}
       </>
@@ -7995,6 +7998,7 @@ function RankingScreen({
   registeredTeams,
   sessionData,
   sessionId,
+  teamProfiles,
 }) {
   const [rankingTab, setRankingTab] = useState("daily");
   const [draftDailyOrderTeamIds, setDraftDailyOrderTeamIds] = useState([]);
@@ -8013,8 +8017,60 @@ function RankingScreen({
     [dailyRankingRows, fallbackDailyRows],
   );
   const yearlyTeams = useMemo(() => {
+    const profileByTeamKey = new Map(
+      (teamProfiles || []).map((profile) => [
+        profile.teamNameNormalized ||
+          profile.normalizedName ||
+          normalizeTeamName(profile.teamName || profile.name || ""),
+        profile,
+      ]),
+    );
+    const sessionSource = allTeamSessions?.length > 0 ? allTeamSessions : allTeams;
+    const sessionTeamKeys = new Set();
+    const enrichedSessions = sessionSource.map((session) => {
+      const teamKey =
+        session.teamNameNormalized ||
+        session.teamId ||
+        normalizeTeamName(session.teamName || "");
+      const profile = profileByTeamKey.get(teamKey);
+      if (teamKey) sessionTeamKeys.add(teamKey);
+
+      return {
+        ...session,
+        rankingOptIn: Boolean(
+          session.rankingOptIn ||
+            session.yearlyRankingOptIn ||
+            session.yearlyRankingOptInAtTime ||
+            session.rankingPassword ||
+            profile?.rankingOptIn ||
+            profile?.yearlyRankingOptIn ||
+            profile?.rankingPassword,
+        ),
+      };
+    });
+    const profileOnlyTeams = (teamProfiles || [])
+      .filter((profile) => {
+        const teamKey =
+          profile.teamNameNormalized ||
+          profile.normalizedName ||
+          normalizeTeamName(profile.teamName || profile.name || "");
+        return (
+          Boolean(
+            profile.rankingOptIn || profile.yearlyRankingOptIn || profile.rankingPassword,
+          ) && !sessionTeamKeys.has(teamKey)
+        );
+      })
+      .map((profile) => ({
+        id: profile.id,
+        teamId: profile.id,
+        teamName: profile.teamName || profile.name || profile.id,
+        teamNameNormalized:
+          profile.teamNameNormalized || profile.normalizedName || profile.id,
+        rankingOptIn: true,
+        totalPoints: 0,
+      }));
     const liveYearlyTeams = aggregateYearlyRanking(
-      allTeamSessions?.length > 0 ? allTeamSessions : allTeams,
+      [...enrichedSessions, ...profileOnlyTeams],
     );
 
     if (liveYearlyTeams.length > 0) return liveYearlyTeams;
@@ -8033,7 +8089,7 @@ function RankingScreen({
           Number(b.totalPoints || 0) - Number(a.totalPoints || 0) ||
           (a.teamName || "").localeCompare(b.teamName || ""),
       );
-  }, [allTeamSessions, allTeams, globalRankingRows]);
+  }, [allTeamSessions, allTeams, globalRankingRows, teamProfiles]);
   const persistedDailyOrderTeamIds = useMemo(
     () => persistedDailyRows.map((row) => row.teamId),
     [persistedDailyRows],
