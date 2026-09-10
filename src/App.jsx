@@ -98,6 +98,8 @@ const EMERGENCY_JOIN_WINDOW_MS = 5 * 60 * 1000;
 const DEMO_LOBBY_CODE = "DEMO01";
 const DEMO_PUB_QUIZ_ID = "demo-pubquiz-template";
 const DEMO_TEAM_NAMES = ["Quizonauten", "Kneipen-Koryphäen", "Die Ratlosen", "Besserwisser", "Team Konfetti"];
+const DEMO_MANAGER_TEAM_ID = "demo-manager-team";
+const DEMO_ROUND_MAX_POINTS = 7;
 const RECENT_MANAGER_SESSION_KEY = "pqRecentManagerSession";
 const RECENT_PLAYER_SESSION_KEY = "pqRecentPlayerSession";
 const RECENT_PLAYER_SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -182,6 +184,42 @@ function getEventId(code) {
 
 function getTeamId(name) {
   return normalizeTeamName(name);
+}
+
+function createDemoRoundAnswers(questionIds = [], roundPoints) {
+  let remainingPoints = Math.max(0, Math.min(DEMO_ROUND_MAX_POINTS, Number(roundPoints) || 0));
+  const finalQuestionId = questionIds[questionIds.length - 1];
+  const correctQuestionIds = new Set();
+
+  // Question six is worth two points; allocate it first so every score from 0 to 7 is valid.
+  if (finalQuestionId && remainingPoints >= 2) {
+    correctQuestionIds.add(finalQuestionId);
+    remainingPoints -= 2;
+  }
+
+  questionIds.forEach((questionId) => {
+    if (questionId === finalQuestionId || remainingPoints < 1) return;
+    correctQuestionIds.add(questionId);
+    remainingPoints -= 1;
+  });
+
+  return Object.fromEntries(
+    questionIds.map((questionId) => {
+      const questionPoints = questionId === finalQuestionId ? 2 : 1;
+      const isCorrect = correctQuestionIds.has(questionId);
+
+      return [
+        questionId,
+        {
+          text: "Demo-Antwort",
+          result: isCorrect ? "correct" : "incorrect",
+          locked: true,
+          pointsAwarded: isCorrect ? questionPoints : 0,
+          updatedAt: serverTimestamp(),
+        },
+      ];
+    }),
+  );
 }
 
 function getTeammateId(name) {
@@ -3391,6 +3429,11 @@ function App() {
         answerWindowEndsAt: new Date(startedAt.getTime() + ANSWER_WINDOW_MS),
         startedAt,
         roundStarts: { round1: startedAt },
+        tiebreakerParticipants: {},
+        tiebreakerReady: {},
+        tiebreakerStatus: "idle",
+        tiebreakerSubmissions: {},
+        tiebreakerTeamStates: {},
         unlockedRounds: { round1: true },
         updatedAt: serverTimestamp(),
         createdAt: serverTimestamp(),
@@ -3418,12 +3461,31 @@ function App() {
         { merge: true },
       );
     });
+    const managerDemoTeamName = `Demo-Team: ${activeManager.name || activeManager.id}`;
+    batch.set(
+      getTeamSessionRef(DEMO_LOBBY_CODE, DEMO_MANAGER_TEAM_ID),
+      {
+        ...createSessionRecord({
+          cleanedCode: DEMO_LOBBY_CODE,
+          cleanedName: managerDemoTeamName,
+          displayName: activeManager.name || activeManager.id,
+          normalized: DEMO_MANAGER_TEAM_ID,
+          rankingOptIn: false,
+        }),
+        answers: {},
+        roundStarts: { round1: startedAt },
+        totalPoints: 0,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
 
     try {
       await batch.commit();
       setActivePubQuiz({ ...demoQuiz, createdAt: startedAt, updatedAt: startedAt });
       setActiveRoundId("round1");
       setLobbyCode(DEMO_LOBBY_CODE);
+      setSessionId(null);
       setSessionData({
         lobbyCode: DEMO_LOBBY_CODE,
         managerOnly: true,
@@ -3434,37 +3496,57 @@ function App() {
       });
       setAdminTab("live");
       setAppView("admin");
-      setQuizManagerMessage("Demo gestartet: 5 Testteams sind bereit.");
+      setQuizManagerMessage(
+        `Demo gestartet: 5 Testteams und ${managerDemoTeamName} sind bereit.`,
+      );
     } catch (error) {
       console.error("DEMO START ERROR:", error);
       setQuizManagerMessage(`Demo konnte nicht gestartet werden: ${error.message}`);
     }
   }
 
+  function openDemoManagerTeamSimulator() {
+    if (!activeManager || sessionData?.lobbyCode !== DEMO_LOBBY_CODE) return;
+
+    const managerDemoTeamName = `Demo-Team: ${activeManager.name || activeManager.id}`;
+    setSessionId(DEMO_MANAGER_TEAM_ID);
+    setSessionData({
+      id: DEMO_MANAGER_TEAM_ID,
+      eventId: getEventId(DEMO_LOBBY_CODE),
+      quizId: latestQuizId,
+      lobbyCode: DEMO_LOBBY_CODE,
+      quizCode: DEMO_LOBBY_CODE,
+      teamId: DEMO_MANAGER_TEAM_ID,
+      teamName: managerDemoTeamName,
+      teamNameNormalized: DEMO_MANAGER_TEAM_ID,
+      playerName: activeManager.name || activeManager.id,
+      rankingOptIn: false,
+      totalPoints: 0,
+    });
+    setAppView("main");
+  }
+
   async function finishDemoRound() {
     if (sessionData?.lobbyCode !== DEMO_LOBBY_CODE || !activeRound) return;
 
+    const roundAlreadyFinished = registeredTeams.length > 0 && registeredTeams.every((team) =>
+      activeRound.questionIds.every((questionId) => Boolean(team.answers?.[questionId]?.locked)),
+    );
+    if (roundAlreadyFinished) {
+      setQuizManagerMessage(`${activeRound.title} ist im Demo bereits beendet.`);
+      return;
+    }
+
     const batch = writeBatch(db);
-    registeredTeams.forEach((team, index) => {
-      const roundAnswers = Object.fromEntries(
-        activeRound.questionIds.map((questionId) => [
-          questionId,
-          {
-            text: "Demo-Antwort",
-            result: "correct",
-            locked: true,
-            pointsAwarded: 1,
-            updatedAt: serverTimestamp(),
-          },
-        ]),
-      );
-      const randomPoints = 3 + ((index * 5 + Math.floor(Math.random() * 7)) % 8);
+    registeredTeams.forEach((team) => {
+      const roundPoints = Math.floor(Math.random() * (DEMO_ROUND_MAX_POINTS + 1));
+      const roundAnswers = createDemoRoundAnswers(activeRound.questionIds, roundPoints);
 
       batch.set(
         getTeamSessionRef(DEMO_LOBBY_CODE, team.id),
         {
           answers: { ...(team.answers || {}), ...roundAnswers },
-          totalPoints: (Number(team.totalPoints) || 0) + randomPoints,
+          totalPoints: (Number(team.totalPoints) || 0) + roundPoints,
           updatedAt: serverTimestamp(),
         },
         { merge: true },
@@ -3484,6 +3566,7 @@ function App() {
     setActivePubQuiz(null);
     setActiveRoundId(defaultQuizRounds[0].id);
     setLobbyCode("");
+    setSessionId(null);
     setSessionData({
       lobbyCode: "",
       managerOnly: true,
@@ -6228,6 +6311,7 @@ function App() {
           onDeleteVoucherAssignment={deleteVoucherAssignment}
           onExitDemo={exitDemoMode}
           onFinishDemoRound={finishDemoRound}
+          onOpenDemoTeamSimulator={openDemoManagerTeamSimulator}
           onOpenAdmin={() => setAppView("admin")}
           onOpenMain={() => setAppView("main")}
           onOpenFaq={() => setAppView("faq")}
@@ -8633,6 +8717,7 @@ function AdminScreen({
   onDeleteVoucherAssignment,
   onExitDemo,
   onFinishDemoRound,
+  onOpenDemoTeamSimulator,
   onSetAutomaticRoundUnlock,
   onSaveTiebreakerSetup,
   onSetTeamTiebreakerState,
@@ -8759,7 +8844,12 @@ function AdminScreen({
         </p>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
           {sessionData?.lobbyCode === DEMO_LOBBY_CODE ? (
-            <button type="button" onClick={onExitDemo}>Demo verlassen</button>
+            <>
+              <button type="button" onClick={onOpenDemoTeamSimulator}>
+                Als Demo-Team spielen
+              </button>
+              <button type="button" onClick={onExitDemo}>Demo verlassen</button>
+            </>
           ) : (
             <button type="button" onClick={onStartDemo}>Demo starten</button>
           )}
