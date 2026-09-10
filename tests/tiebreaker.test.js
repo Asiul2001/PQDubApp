@@ -57,6 +57,24 @@ test("daily ranking uses tiebreaker distance to resolve podium ties", () => {
   assert.deepEqual(ranking, ["beta", "alpha", "gamma"]);
 });
 
+test("a stopped tiebreaker clock decides equal estimates before final submission time", () => {
+  const teams = [createTeam("alpha", 10), createTeam("beta", 10)];
+  const lobbyData = {
+    tiebreakerAnswer: 200,
+    tiebreakerSubmissions: {
+      alpha: { estimate: 210, submittedAt: new Date("2026-05-25T20:00:20.000Z") },
+      beta: { estimate: 190, submittedAt: new Date("2026-05-25T20:00:10.000Z") },
+    },
+    tiebreakerTeamStates: {
+      alpha: { stoppedAt: new Date("2026-05-25T20:00:05.000Z") },
+    },
+  };
+
+  const ranking = getDailyRankingWithTiebreakers(teams, lobbyData).ranking.map((team) => team.id);
+
+  assert.deepEqual(ranking, ["alpha", "beta"]);
+});
+
 test("maximum possible points include unanswered final-round questions", () => {
   const team = createTeam("alpha", 10, {
     q13: { text: "done" },

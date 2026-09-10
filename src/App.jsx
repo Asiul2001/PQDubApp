@@ -3621,7 +3621,73 @@ function App() {
     }
   }
 
-  function exitDemoMode() {
+  async function exitDemoMode() {
+    if (sessionData?.lobbyCode === DEMO_LOBBY_CODE && activeManager) {
+      const resetAt = new Date();
+      const batch = writeBatch(db);
+      const managerDemoTeamName = `Demo-Team: ${activeManager.name || activeManager.id}`;
+
+      batch.set(
+        getEventRef(DEMO_LOBBY_CODE),
+        {
+          id: getEventId(DEMO_LOBBY_CODE),
+          quizId: latestQuizId,
+          lobbyCode: DEMO_LOBBY_CODE,
+          quizCode: DEMO_LOBBY_CODE,
+          seasonId: "2026",
+          status: "planned",
+          activeRoundId: "round1",
+          automaticRoundUnlockEnabled: false,
+          roundStarts: {},
+          unlockedRounds: {},
+          revealedAnswers: {},
+          finalReady: {},
+          tiebreakerParticipants: {},
+          tiebreakerReady: {},
+          tiebreakerStatus: "idle",
+          tiebreakerSubmissions: {},
+          tiebreakerTeamStates: {},
+          createdAt: resetAt,
+          updatedAt: resetAt,
+        },
+        { merge: false },
+      );
+
+      [...DEMO_TEAM_NAMES, managerDemoTeamName].forEach((teamName, index) => {
+        const teamId =
+          index < DEMO_TEAM_NAMES.length ? `demo-team-${index + 1}` : DEMO_MANAGER_TEAM_ID;
+        const displayName =
+          teamId === DEMO_MANAGER_TEAM_ID ? activeManager.name || activeManager.id : "Demo";
+
+        batch.set(
+          getTeamSessionRef(DEMO_LOBBY_CODE, teamId),
+          {
+            ...createSessionRecord({
+              cleanedCode: DEMO_LOBBY_CODE,
+              cleanedName: teamName,
+              displayName,
+              normalized: teamId,
+              rankingOptIn: false,
+            }),
+            answers: {},
+            roundStarts: {},
+            totalPoints: 0,
+            updatedAt: resetAt,
+          },
+          { merge: false },
+        );
+      });
+      batch.delete(doc(db, "pubQuizzes", DEMO_PUB_QUIZ_ID));
+
+      try {
+        await batch.commit();
+      } catch (error) {
+        console.error("DEMO RESET ERROR:", error);
+        setQuizManagerMessage(`Demo konnte nicht zurueckgesetzt werden: ${error.message}`);
+        return;
+      }
+    }
+
     setActivePubQuiz(null);
     setActiveRoundId(defaultQuizRounds[0].id);
     setLobbyCode("");
@@ -3635,7 +3701,7 @@ function App() {
       totalPoints: 0,
     });
     setAdminTab("quizzes");
-    setQuizManagerMessage("Demo beendet. Reale Quizze bleiben unverändert.");
+    setQuizManagerMessage("Demo beendet und vollstaendig zurueckgesetzt. Reale Quizze bleiben unveraendert.");
   }
 
   async function saveTeamSession({
@@ -5385,7 +5451,9 @@ function App() {
       teamName: teamName || teamId,
       questionVisible: true,
       ...(action === "openAnswers"
-        ? { answersOpen: true, openedAt: serverTimestamp() }
+        ? { answersOpen: true, openedAt: serverTimestamp(), stoppedAt: null }
+        : action === "stopTimer"
+          ? { answersOpen: true, stoppedAt: serverTimestamp() }
         : {}),
     };
 
@@ -5400,6 +5468,8 @@ function App() {
         message:
           action === "openAnswers"
             ? `Antworten für ${teamName || teamId} geöffnet.`
+            : action === "stopTimer"
+              ? `Zeit für ${teamName || teamId} gestoppt.`
             : `Schätzfrage für ${teamName || teamId} angezeigt.`,
       };
     } catch (error) {
@@ -13613,11 +13683,32 @@ function LiveTiebreakerPanel({
               <h3 style={{ marginTop: 0 }}>{selectedTeam.teamName}</h3>
               <button type="button" onClick={() => updateSelectedTeam("showQuestion")}>Frage zeigen</button>
               <button type="button" onClick={() => updateSelectedTeam("openAnswers")} style={{ marginLeft: 10 }}>Antworten öffnen</button>
-              {lobbyData?.tiebreakerTeamStates?.[selectedTeam.id]?.answersOpen && !getTiebreakerSubmission(lobbyData, selectedTeam.id) && (
-                <p style={{ fontSize: 32, fontWeight: 800, color: "#fde68a" }}>
-                  {formatStopwatch(now - getTimestampMs(lobbyData.tiebreakerTeamStates[selectedTeam.id].openedAt))}
-                </p>
-              )}
+              {(() => {
+                const teamState = lobbyData?.tiebreakerTeamStates?.[selectedTeam.id];
+                const submission = getTiebreakerSubmission(lobbyData, selectedTeam.id);
+                const stoppedAtMs = getTimestampMs(teamState?.stoppedAt);
+                const openedAtMs = getTimestampMs(teamState?.openedAt);
+
+                if (!teamState?.answersOpen || submission) return null;
+
+                return (
+                  <>
+                    {!stoppedAtMs && (
+                      <button
+                        type="button"
+                        onClick={() => updateSelectedTeam("stopTimer")}
+                        style={{ marginLeft: 10, background: "#b45309", color: "#fff7ed" }}
+                      >
+                        Zeit stoppen
+                      </button>
+                    )}
+                    <p style={{ fontSize: 32, fontWeight: 800, color: "#fde68a" }}>
+                      {formatStopwatch((stoppedAtMs || now) - openedAtMs)}
+                      {stoppedAtMs ? " - gestoppt" : ""}
+                    </p>
+                  </>
+                );
+              })()}
             </>
           ) : <p>Kein Team angemeldet.</p>}
         </div>
@@ -14138,10 +14229,11 @@ function TiebreakerTeamPanel({
   const submission = getTiebreakerSubmission(lobbyData, sessionId);
   const answer = Number(lobbyData?.tiebreakerAnswer);
   const distance = getTiebreakerDistance(lobbyData, sessionId);
+  const stoppedAtMs = getTimestampMs(teamState?.stoppedAt);
   const elapsedMs = isActive
     ? (submission
-        ? getTimestampMs(submission.submittedAt)
-        : now) - getTimestampMs(teamState?.openedAt || lobbyData?.tiebreakerStartedAt)
+        ? stoppedAtMs || getTimestampMs(submission.submittedAt)
+        : stoppedAtMs || now) - getTimestampMs(teamState?.openedAt || lobbyData?.tiebreakerStartedAt)
     : 0;
 
   async function handleSubmit(e) {
@@ -14172,6 +14264,7 @@ function TiebreakerTeamPanel({
       {isActive && (
         <p style={{ margin: "0 0 16px", fontSize: 56, fontWeight: 800, letterSpacing: "0.03em" }}>
           {formatStopwatch(elapsedMs)}
+          {stoppedAtMs ? " - gestoppt" : ""}
         </p>
       )}
 

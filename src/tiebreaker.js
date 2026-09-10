@@ -15,8 +15,11 @@ export function getEstimateValue(lobbyData, teamId) {
   return Number.isFinite(estimate) ? estimate : null;
 }
 
-function getTiebreakerSubmittedMs(lobbyData, teamId) {
-  return getTimestampMs(getTiebreakerSubmission(lobbyData, teamId)?.submittedAt);
+function getTiebreakerDecisionMs(lobbyData, teamId) {
+  return (
+    getTimestampMs(lobbyData?.tiebreakerTeamStates?.[teamId]?.stoppedAt) ||
+    getTimestampMs(getTiebreakerSubmission(lobbyData, teamId)?.submittedAt)
+  );
 }
 
 export function getTiebreakerDistance(lobbyData, teamId) {
@@ -80,8 +83,8 @@ export function getDailyRankingWithTiebreakers(teams, lobbyData) {
       if (distanceA !== null && distanceB === null) return -1;
       if (distanceA === null && distanceB !== null) return 1;
 
-      const submittedA = getTiebreakerSubmittedMs(lobbyData, a.id);
-      const submittedB = getTiebreakerSubmittedMs(lobbyData, b.id);
+      const submittedA = getTiebreakerDecisionMs(lobbyData, a.id);
+      const submittedB = getTiebreakerDecisionMs(lobbyData, b.id);
 
       if (submittedA && submittedB && submittedA !== submittedB) {
         return submittedA - submittedB;
