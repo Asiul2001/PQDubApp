@@ -1229,9 +1229,20 @@ async function loadVoucherDocsForTeam(teamId, eventIds = []) {
   return mergeVoucherDocs(eventDocs, teamDocs);
 }
 
-async function loadAllVoucherDocsFromFirestore(allSessions = [], teamProfiles = []) {
+async function loadAllVoucherDocsFromFirestore(
+  allSessions = [],
+  teamProfiles = [],
+  eventRecords = [],
+) {
   const eventIds = Array.from(
-    new Set(allSessions.map((session) => session.eventId).filter(Boolean)),
+    new Set(
+      [
+        ...allSessions.map((session) => session.eventId),
+        ...eventRecords.map(
+          (event) => event.eventId || getEventId(event.quizCode || event.lobbyCode || ""),
+        ),
+      ].filter(Boolean),
+    ),
   );
   const teamIds = Array.from(
     new Set(
@@ -2720,6 +2731,7 @@ function App() {
           const normalizedDocs = await loadAllVoucherDocsFromFirestore(
             allTeamSessions,
             teamProfiles,
+            eventRecords,
           );
 
           if (cancelled) return;
@@ -2800,6 +2812,7 @@ function App() {
     sessionId,
     shouldLoadArchiveData,
     teamProfiles,
+    eventRecords,
   ]);
 
   useEffect(() => {
@@ -9198,42 +9211,23 @@ function VoucherDirectory({
       ? buildAllVoucherEntries([], selectedEventVoucherDocs, pubQuizzes)
       : allEffectiveVouchers
     ).filter((voucher) => !voucher.deleted && voucher.eventId === selectedEvent?.eventId);
-  const selectedEventSessions = Array.from(
-    selectedEventVoucherCandidates.reduce((map, voucher) => {
-      const teamKey = voucher.teamId || normalizeTeamName(voucher.teamName || "");
-      if (!teamKey || map.has(teamKey)) return map;
+  // Voucher recipients must never become event participants. Only recorded team sessions
+  // determine which teams may receive a voucher for an event that already has teams.
+  const selectedEventSessions = selectedEventRankingRows.map((row) => {
+    const matchingSession = selectedEventMergedSessions.find(
+      (session) => (session.teamId || session.id) === row.teamId,
+    );
 
-      map.set(teamKey, {
-        id: voucher.sourceSessionId || teamKey,
-        teamId: teamKey,
-        teamName: voucher.teamName || teamKey,
-        totalPoints: Number(voucher.totalPoints) || 0,
-        rankDaily: Number(voucher.rank) || 0,
-        podiumBonusPoints: 0,
-      });
-
-      return map;
-    }, new Map(
-      selectedEventRankingRows.map((row) => {
-        const matchingSession = selectedEventMergedSessions.find(
-          (session) => (session.teamId || session.id) === row.teamId,
-        );
-
-        return [
-          row.teamId,
-          {
-            ...matchingSession,
-            id: matchingSession?.id || row.sourceSessionId || row.teamId,
-            teamId: row.teamId,
-            teamName: row.teamName,
-            totalPoints: Number(row.totalPoints) || 0,
-            rankDaily: row.rank,
-            podiumBonusPoints: row.podiumBonusPoints || 0,
-          },
-        ];
-      }),
-    )).values(),
-  );
+    return {
+      ...matchingSession,
+      id: matchingSession?.id || row.sourceSessionId || row.teamId,
+      teamId: row.teamId,
+      teamName: row.teamName,
+      totalPoints: Number(row.totalPoints) || 0,
+      rankDaily: row.rank,
+      podiumBonusPoints: row.podiumBonusPoints || 0,
+    };
+  });
   const yearlyRankingTeamChoices =
     globalRankingRows.length > 0
       ? globalRankingRows.map((row) => ({
@@ -9251,7 +9245,9 @@ function VoucherDirectory({
             totalPoints: Number(team.totalPoints) || 0,
           }));
   const selectedEventTeamChoices =
-    selectedEventSessions.length > 0 ? selectedEventSessions : yearlyRankingTeamChoices;
+    selectedEventMergedSessions.length > 0
+      ? selectedEventSessions
+      : yearlyRankingTeamChoices;
   const selectedEventTeamIds = Array.from(
     new Set(selectedEventSessions.map((session) => session.teamId || session.id).filter(Boolean)),
   );
