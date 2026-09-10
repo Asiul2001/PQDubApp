@@ -1,27 +1,26 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
-    <linearGradient id="night" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#083e54"/><stop offset=".52" stop-color="#031b31"/><stop offset="1" stop-color="#010812"/></linearGradient>
-    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#e7a82e"/><stop offset=".18" stop-color="#ffc958"/><stop offset=".24" stop-color="#4a210b"/><stop offset="1" stop-color="#160703"/></linearGradient>
-    <linearGradient id="foam" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff9df"/><stop offset="1" stop-color="#f7c85a"/></linearGradient>
-    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#00e8e7"/><stop offset="1" stop-color="#0099d9"/></linearGradient>
-    <filter id="glow" x="-35%" y="-35%" width="170%" height="170%"><feGaussianBlur stdDeviation="10" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="18"/></filter>
+    <radialGradient id="sky" cx="50%" cy="30%" r="78%"><stop stop-color="#07546c"/><stop offset=".48" stop-color="#062a43"/><stop offset="1" stop-color="#010a1b"/></radialGradient>
+    <linearGradient id="stout" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#52230d"/><stop offset=".18" stop-color="#251005"/><stop offset="1" stop-color="#070504"/></linearGradient>
+    <linearGradient id="cream" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fffbe4"/><stop offset=".72" stop-color="#f4d28a"/><stop offset="1" stop-color="#dca442"/></linearGradient>
+    <linearGradient id="neon" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#13f4ee"/><stop offset="1" stop-color="#008ed8"/></linearGradient>
+    <filter id="blueGlow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="9" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <filter id="goldGlow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
   </defs>
-  <rect width="512" height="512" fill="#010812"/>
-  <rect width="512" height="512" rx="112" fill="#010812"/>
-  <rect x="10" y="10" width="492" height="492" rx="104" fill="url(#night)" stroke="#0b5670" stroke-width="3"/>
-  <ellipse cx="256" cy="213" rx="170" ry="155" fill="#00dfe9" opacity=".13" filter="url(#soft)"/>
-  <circle cx="256" cy="226" r="177" fill="none" stroke="url(#cyan)" stroke-width="14" opacity=".9" filter="url(#glow)"/>
-  <circle cx="256" cy="226" r="151" fill="none" stroke="#8af9ff" stroke-width="2" opacity=".35"/>
-  <path d="M162 141h188l-15 228H177z" fill="url(#glass)" stroke="#ffd76f" stroke-width="8" stroke-linejoin="round"/>
-  <path d="M177 159h158l-5 60H182z" fill="#ffda78" opacity=".3"/>
-  <path d="M165 147c0-36 19-57 55-54 24-24 61-16 76 9 34-4 54 16 51 45z" fill="url(#foam)" stroke="#fff3c4" stroke-width="7" stroke-linejoin="round"/>
-  <path d="M176 145c23-16 47-19 72-8 24-20 54-17 82 8" fill="none" stroke="#fffdf1" stroke-width="11" stroke-linecap="round" opacity=".9"/>
-  <path d="M205 169c9 58 7 129-2 169" fill="none" stroke="#fff3ce" stroke-width="12" stroke-linecap="round" opacity=".34"/>
-  <path d="M226 204c0-29 49-42 70-13 17 24-2 44-26 61-10 7-14 16-14 30" fill="none" stroke="#ffe178" stroke-width="26" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
-  <circle cx="256" cy="338" r="16" fill="#ffe178" filter="url(#glow)"/>
-  <path d="M153 277l-46 24M153 319l-51 2M359 277l46 24M359 319l51 2" stroke="#ffe178" stroke-width="12" stroke-linecap="round" opacity=".9"/>
-  <text x="256" y="449" fill="url(#cyan)" font-family="Verdana, sans-serif" font-size="94" font-weight="900" letter-spacing="-12" text-anchor="middle" filter="url(#glow)">PQ</text>
-  <path d="M157 430c13-20 31-17 36 0 8-17 28-17 40 0-3 23-25 39-38 48-15-10-34-25-38-48z" fill="#20c978" stroke="#8bffc0" stroke-width="3" opacity=".9"/>
-  <path d="M355 430c13-20 31-17 36 0 8-17 28-17 40 0-3 23-25 39-38 48-15-10-34-25-38-48z" fill="#20c978" stroke="#8bffc0" stroke-width="3" opacity=".9"/>
+  <rect width="512" height="512" fill="#010a1b"/>
+  <rect x="8" y="8" width="496" height="496" rx="108" fill="url(#sky)" stroke="#0b7391" stroke-width="4"/>
+  <circle cx="256" cy="225" r="180" fill="none" stroke="url(#neon)" stroke-width="15" filter="url(#blueGlow)"/>
+  <circle cx="256" cy="225" r="157" fill="none" stroke="#9cfbff" stroke-width="2" opacity=".45"/>
+  <g fill="#ffdd77" filter="url(#goldGlow)"><path d="M95 226l31 16-31 16z"/><path d="M417 226l-31 16 31 16z"/><rect x="99" y="286" width="54" height="10" rx="5" transform="rotate(-28 126 291)"/><rect x="359" y="286" width="54" height="10" rx="5" transform="rotate(28 386 291)"/><rect x="87" y="327" width="62" height="10" rx="5"/><rect x="363" y="327" width="62" height="10" rx="5"/></g>
+  <path d="M169 126h174l-13 244H182z" fill="url(#stout)" stroke="#f0b744" stroke-width="9" stroke-linejoin="round"/>
+  <path d="M184 151h144l-6 59H190z" fill="#7c3712" opacity=".48"/>
+  <path d="M196 150c-5-37 21-61 58-51 18-31 61-29 79 5 30-4 45 18 38 46z" fill="url(#cream)" stroke="#fff0b7" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M199 149c21-20 50-22 73-7 24-24 57-20 80 7" fill="none" stroke="#fffdf2" stroke-width="13" stroke-linecap="round"/>
+  <path d="M207 168c13 55 11 132 2 171" fill="none" stroke="#ffd77f" stroke-width="12" stroke-linecap="round" opacity=".33"/>
+  <path d="M229 202c0-28 52-38 70-10 14 23-3 42-26 57-11 8-16 16-16 31" fill="none" stroke="#ffe184" stroke-width="25" stroke-linecap="round" stroke-linejoin="round" filter="url(#goldGlow)"/>
+  <circle cx="257" cy="299" r="15" fill="#ffe184" filter="url(#goldGlow)"/>
+  <g fill="#1fc877" stroke="#a8ffd0" stroke-width="3"><path d="M102 397c16-24 37-20 42 1 10-21 33-21 45 1-4 29-28 49-44 61-18-13-39-33-43-63z"/><path d="M323 398c16-24 37-20 42 1 10-21 33-21 45 1-4 29-28 49-44 61-18-13-39-33-43-63z"/></g>
+  <path d="M144 416l-18 35M366 416l18 35" stroke="#43d58e" stroke-width="6" stroke-linecap="round"/>
+  <text x="256" y="415" fill="#f8fbff" font-family="Georgia, serif" font-size="54" font-weight="700" letter-spacing="4" text-anchor="middle">PUB</text>
+  <text x="256" y="465" fill="url(#neon)" font-family="Verdana, sans-serif" font-size="47" font-weight="900" letter-spacing="1" text-anchor="middle" filter="url(#blueGlow)">QUIZ</text>
 </svg>
