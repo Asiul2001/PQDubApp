@@ -2879,6 +2879,18 @@ function App() {
     });
   }, [sessionData?.lobbyCode]);
 
+  useEffect(() => {
+    if (
+      sessionData?.lobbyCode !== DEMO_LOBBY_CODE ||
+      !activeManager ||
+      registeredTeams.some((team) => team.id === DEMO_MANAGER_TEAM_ID)
+    ) {
+      return;
+    }
+
+    ensureDemoManagerTeam();
+  }, [activeManager, registeredTeams, sessionData?.lobbyCode]);
+
   async function persistDailyRankingState(rows, options = {}) {
     if (!sessionData?.lobbyCode) {
       return { ok: false, message: "Kein aktives Event fuer das Ranking gefunden." };
@@ -3505,8 +3517,54 @@ function App() {
     }
   }
 
-  function openDemoManagerTeamSimulator() {
+  async function ensureDemoManagerTeam() {
+    if (!activeManager) return false;
+
+    const managerDemoTeamName = `Demo-Team: ${activeManager.name || activeManager.id}`;
+    const managerTeamRef = getTeamSessionRef(DEMO_LOBBY_CODE, DEMO_MANAGER_TEAM_ID);
+
+    try {
+      const existingTeam = await getDoc(managerTeamRef);
+
+      if (existingTeam.exists()) {
+        await setDoc(
+          managerTeamRef,
+          {
+            playerName: activeManager.name || activeManager.id,
+            playerNames: [activeManager.name || activeManager.id],
+            teamName: managerDemoTeamName,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        );
+        return true;
+      }
+
+      await setDoc(managerTeamRef, {
+        ...createSessionRecord({
+          cleanedCode: DEMO_LOBBY_CODE,
+          cleanedName: managerDemoTeamName,
+          displayName: activeManager.name || activeManager.id,
+          normalized: DEMO_MANAGER_TEAM_ID,
+          rankingOptIn: false,
+        }),
+        answers: {},
+        roundStarts: lobbyData?.roundStarts || { round1: serverTimestamp() },
+        totalPoints: 0,
+        updatedAt: serverTimestamp(),
+      });
+      return true;
+    } catch (error) {
+      console.error("DEMO MANAGER TEAM ERROR:", error);
+      setQuizManagerMessage(`Demo-Team konnte nicht erstellt werden: ${error.message}`);
+      return false;
+    }
+  }
+
+  async function openDemoManagerTeamSimulator() {
     if (!activeManager || sessionData?.lobbyCode !== DEMO_LOBBY_CODE) return;
+
+    if (!(await ensureDemoManagerTeam())) return;
 
     const managerDemoTeamName = `Demo-Team: ${activeManager.name || activeManager.id}`;
     setSessionId(DEMO_MANAGER_TEAM_ID);
@@ -8790,8 +8848,10 @@ function AdminScreen({
       ]),
     ),
   });
-  const tiebreakerTeamStatuses = teamStatuses.filter((team) =>
-    tiebreakerState.candidateTeamIds.includes(team.id),
+  const tiebreakerTeamStatuses = teamStatuses.filter(
+    (team) =>
+      tiebreakerState.candidateTeamIds.includes(team.id) ||
+      (lobbyData?.lobbyCode === DEMO_LOBBY_CODE && team.id === DEMO_MANAGER_TEAM_ID),
   );
   const canRevealAnswers = roundUnlocked && !answersRevealed;
   const tabs = [
