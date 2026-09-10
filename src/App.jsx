@@ -2252,6 +2252,7 @@ function App() {
   const [issuedTeamPassword, setIssuedTeamPassword] = useState(null);
   const syncedAnswerDraftsRef = useRef({});
   const lastLobbyActiveRoundRef = useRef({ lobbyCode: "", roundId: null });
+  const unlockingRoundIdsRef = useRef(new Set());
   const shouldLoadArchiveData = Boolean(
     activeManager &&
       appView === "admin" &&
@@ -3450,7 +3451,7 @@ function App() {
         updatedAt: serverTimestamp(),
         createdAt: serverTimestamp(),
       },
-      { merge: true },
+      { merge: false },
     );
 
     DEMO_TEAM_NAMES.forEach((teamName, index) => {
@@ -4398,34 +4399,88 @@ function App() {
   }
 
   async function unlockRound(roundId) {
-    if (!sessionData?.lobbyCode) return;
+    if (!isAdmin || !activeManager || !sessionData?.lobbyCode || !roundId) return false;
+    if (unlockingRoundIdsRef.current.has(roundId)) return false;
+
+    unlockingRoundIdsRef.current.add(roundId);
 
     try {
       const lobbyRef = getEventRef(sessionData.lobbyCode);
+      const targetRoundIndex = quizRounds.findIndex((round) => round.id === roundId);
 
-      await setDoc(
-        lobbyRef,
-        {
-          quizId: latestQuizId,
-          lobbyCode: sessionData.lobbyCode,
-          quizCode: sessionData.lobbyCode,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
+      if (targetRoundIndex === -1) {
+        throw new Error("Diese Runde existiert nicht im geladenen Quiz.");
+      }
 
-      await updateDoc(lobbyRef, {
-        activeRoundId: roundId,
-        [`roundStarts.${roundId}`]: serverTimestamp(),
-        [`unlockedRounds.${roundId}`]: true,
-        updatedAt: serverTimestamp(),
+      const unlockStartedAt = new Date();
+      let didUnlock = false;
+
+      await runTransaction(db, async (transaction) => {
+        const lobbySnapshot = await transaction.get(lobbyRef);
+        const currentLobby = lobbySnapshot.exists() ? lobbySnapshot.data() : {};
+        const currentUnlockedRounds = currentLobby.unlockedRounds || {};
+        const currentRoundStarts = currentLobby.roundStarts || {};
+
+        if (currentUnlockedRounds[roundId] || currentRoundStarts[roundId]) return;
+
+        const previousRound = quizRounds[targetRoundIndex - 1];
+        if (
+          previousRound &&
+          !currentUnlockedRounds[previousRound.id] &&
+          !currentRoundStarts[previousRound.id]
+        ) {
+          throw new Error(
+            `${getRoundDisplayTitle(previousRound, targetRoundIndex - 1)} muss zuerst freigeschaltet werden.`,
+          );
+        }
+
+        transaction.set(
+          lobbyRef,
+          {
+            id: currentLobby.id || getEventId(sessionData.lobbyCode),
+            quizId: currentLobby.quizId || latestQuizId,
+            lobbyCode: currentLobby.lobbyCode || sessionData.lobbyCode,
+            quizCode: currentLobby.quizCode || sessionData.lobbyCode,
+            activeRoundId: roundId,
+            roundStarts: {
+              ...currentRoundStarts,
+              [roundId]: unlockStartedAt,
+            },
+            unlockedRounds: {
+              ...currentUnlockedRounds,
+              [roundId]: true,
+            },
+            updatedAt: unlockStartedAt,
+          },
+          { merge: true },
+        );
+        didUnlock = true;
       });
+
+      if (!didUnlock) return true;
+
+      setLobbyData((currentLobby) => ({
+        ...(currentLobby || {}),
+        activeRoundId: roundId,
+        roundStarts: {
+          ...(currentLobby?.roundStarts || {}),
+          [roundId]: unlockStartedAt,
+        },
+        unlockedRounds: {
+          ...(currentLobby?.unlockedRounds || {}),
+          [roundId]: true,
+        },
+      }));
       setActiveRoundId(roundId);
+      return true;
     } catch (error) {
       console.error("ROUND UNLOCK ERROR:", error);
       setQuizManagerMessage(
         `Runde konnte nicht freigeschaltet werden: ${error.message}`,
       );
+      return false;
+    } finally {
+      unlockingRoundIdsRef.current.delete(roundId);
     }
   }
 
@@ -4517,6 +4572,10 @@ function App() {
   async function startTeamRound(roundId) {
     if (!sessionData?.lobbyCode) {
       setMessage("Bitte erst einen Quiz-Code laden.");
+      return;
+    }
+    if (!isRoundUnlocked(lobbyData, roundId)) {
+      setMessage("Diese Runde wurde noch nicht freigeschaltet.");
       return;
     }
 
