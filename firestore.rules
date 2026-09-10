@@ -342,6 +342,11 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // Enables the public collection-group query used by the live Jahresranking.
+    match /{document=**}/teamSessions/{teamId} {
+      allow read: if true;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
