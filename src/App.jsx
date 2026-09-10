@@ -8691,6 +8691,23 @@ function AdminScreen({
       started: startMs !== null,
     };
   });
+  const tiebreakerState = getTiebreakerState({
+    teams: registeredTeams,
+    lobbyData,
+    finalRound: getLastQuizRound(quizRounds),
+    now,
+    isRoundFinished,
+    quizRounds,
+    questionPointsById: Object.fromEntries(
+      Object.entries(questions).map(([questionId, question]) => [
+        questionId,
+        Number(question?.points) || 0,
+      ]),
+    ),
+  });
+  const tiebreakerTeamStatuses = teamStatuses.filter((team) =>
+    tiebreakerState.candidateTeamIds.includes(team.id),
+  );
   const canRevealAnswers = roundUnlocked && !answersRevealed;
   const tabs = [
     ["live", "Live-Steuerung"],
@@ -8797,6 +8814,7 @@ function AdminScreen({
             selectedQuestions={selectedQuestions}
             selectedRound={selectedRound}
             teamStatuses={teamStatuses}
+            tiebreakerTeamStatuses={tiebreakerTeamStatuses}
           />
         ) : adminTab === "teams" ? (
           <TeamDirectory
@@ -11369,6 +11387,7 @@ function LiveControlPanel({
   selectedQuestions,
   selectedRound,
   teamStatuses,
+  tiebreakerTeamStatuses,
 }) {
   const [liveTab, setLiveTab] = useState(selectedRound.id);
   const [selectedTeamId, setSelectedTeamId] = useState(null);
@@ -11556,7 +11575,7 @@ function LiveControlPanel({
         onSaveSetup={onSaveTiebreakerSetup}
         onSetTeamState={onSetTeamTiebreakerState}
         quizRounds={quizRounds}
-        teamStatuses={teamStatuses}
+        teamStatuses={tiebreakerTeamStatuses}
       />
     );
   }

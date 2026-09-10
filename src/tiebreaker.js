@@ -164,6 +164,14 @@ export function getTiebreakerState({
       podiumTieGroups.flatMap((group) => group.teams).map((team) => [team.id, team]),
     ).values(),
   );
+  const unfinishedPodiumContenders = relevantTeams.filter(
+    (team) => !isRoundFinished(team, finalRound, now, lobbyData, quizRounds),
+  );
+  const candidateTeams = Array.from(
+    new Map(
+      [...tiedTeams, ...unfinishedPodiumContenders].map((team) => [team.id, team]),
+    ).values(),
+  );
   const hasPodiumTie = tiedTeams.length > 0;
   const allTiedTeamsReady =
     tiedTeams.length > 0 &&
@@ -200,6 +208,8 @@ export function getTiebreakerState({
     podiumTieGroups,
     relevantTeamIds,
     relevantTeams,
+    candidateTeamIds: candidateTeams.map((team) => team.id),
+    candidateTeams,
     relevantRanking,
     status,
     tiedTeamIds: tiedTeams.map((team) => team.id),

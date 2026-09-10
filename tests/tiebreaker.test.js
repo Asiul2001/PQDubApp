@@ -112,6 +112,26 @@ test("tiebreaker can start before every team finishes if trailing teams are math
   assert.deepEqual(state.relevantTeamIds.sort(), ["alpha", "beta", "gamma"]);
 });
 
+test("tiebreaker team selector only includes tied teams and unfinished podium contenders", () => {
+  const teams = [
+    createTeam("alpha", 10, answeredAll()),
+    createTeam("beta", 10, answeredAll()),
+    createTeam("gamma", 9),
+    createTeam("delta", 1),
+  ];
+
+  const state = getTiebreakerState({
+    teams,
+    lobbyData: {},
+    finalRound,
+    now: new Date("2026-05-25T18:20:00.000Z").getTime(),
+    isRoundFinished,
+    questionPointsById,
+  });
+
+  assert.deepEqual(state.candidateTeamIds.sort(), ["alpha", "beta", "gamma"]);
+});
+
 test("manager-excluded team no longer blocks tiebreaker relevance", () => {
   const teams = [
     createTeam("alpha", 10, answeredAll()),
