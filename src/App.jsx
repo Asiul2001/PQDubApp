@@ -722,7 +722,15 @@ function aggregateYearlyRanking(teams) {
 
   mergedTeams.forEach((team) => {
     const key = team.teamNameNormalized || normalizeTeamName(team.teamName || "");
-    if (team.rankingOptIn && key) rankingTeamKeys.add(key);
+    if (
+      (team.rankingOptIn ||
+        team.yearlyRankingOptIn ||
+        team.yearlyRankingOptInAtTime ||
+        team.rankingPassword) &&
+      key
+    ) {
+      rankingTeamKeys.add(key);
+    }
   });
 
   mergedTeams
@@ -755,6 +763,9 @@ function aggregateYearlyRanking(teams) {
 
       groupedTeams.set(key, {
         ...current,
+        podiums:
+          current.podiums +
+          (Number(team.rankDaily) > 0 && Number(team.rankDaily) <= 3 ? 1 : 0),
         totalQuizPoints: current.totalQuizPoints + quizPoints,
         totalPoints: current.totalPoints + globalPoints,
         sessions: current.sessions + 1,
@@ -2259,6 +2270,9 @@ function App() {
       (adminTab === "teams" || adminTab === "vouchers"),
   );
   const shouldLoadGlobalTeamIndex = Boolean(appView === "ranking");
+  const shouldLoadAllTeamSessions = Boolean(
+    shouldLoadArchiveData || appView === "vouchers" || shouldLoadGlobalTeamIndex,
+  );
 
   useEffect(() => {
     if (sessionId && sessionData?.lobbyCode && !sessionData?.managerOnly) {
@@ -2632,7 +2646,7 @@ function App() {
   }, [shouldLoadGlobalTeamIndex]);
 
   useEffect(() => {
-    if (!shouldLoadArchiveData && appView !== "vouchers") return undefined;
+    if (!shouldLoadAllTeamSessions) return undefined;
 
     const sessionsRef = collectionGroup(db, "teamSessions");
 
@@ -2656,7 +2670,7 @@ function App() {
 
       setAllTeamSessions(sessions);
     });
-  }, [appView, shouldLoadArchiveData]);
+  }, [shouldLoadAllTeamSessions]);
 
   useEffect(() => {
     if (!shouldLoadArchiveData) return undefined;
@@ -6414,6 +6428,7 @@ function App() {
         <RankingScreen
           isAdmin={isAdmin}
           allTeams={allTeams.length ? allTeams : registeredTeams}
+          allTeamSessions={allTeamSessions}
           dailyRankingRows={dailyRankingRows}
           globalRankingRows={globalRankingRows}
           lobbyData={lobbyData}
@@ -7966,6 +7981,7 @@ function AppMenu({
 
 function RankingScreen({
   allTeams,
+  allTeamSessions,
   dailyRankingRows,
   globalRankingRows,
   isAdmin,
@@ -7991,19 +8007,33 @@ function RankingScreen({
     [registeredTeams, lobbyData],
   );
   const persistedDailyRows = useMemo(
-    () => (dailyRankingRows?.length > 0 ? dailyRankingRows : fallbackDailyRows),
+    // The current event must always follow the live team scores. Saved rows are
+    // only a fallback while no current team session is available.
+    () => (fallbackDailyRows.length > 0 ? fallbackDailyRows : dailyRankingRows || []),
     [dailyRankingRows, fallbackDailyRows],
   );
-  const yearlyTeams =
-    globalRankingRows?.length > 0
-      ? globalRankingRows.map((row) => ({
+  const yearlyTeams = useMemo(() => {
+    const liveYearlyTeams = aggregateYearlyRanking(
+      allTeamSessions?.length > 0 ? allTeamSessions : allTeams,
+    );
+
+    if (liveYearlyTeams.length > 0) return liveYearlyTeams;
+
+    return [...(globalRankingRows || [])]
+      .map((row) => ({
           id: row.teamId,
           teamName: row.teamName,
           totalPoints: row.totalGlobalPoints || 0,
           totalQuizPoints: row.totalDailyPoints || 0,
+          podiums: row.podiums || 0,
           sessions: row.gamesPlayed || 0,
-        }))
-      : aggregateYearlyRanking(allTeams || registeredTeams);
+      }))
+      .sort(
+        (a, b) =>
+          Number(b.totalPoints || 0) - Number(a.totalPoints || 0) ||
+          (a.teamName || "").localeCompare(b.teamName || ""),
+      );
+  }, [allTeamSessions, allTeams, globalRankingRows]);
   const persistedDailyOrderTeamIds = useMemo(
     () => persistedDailyRows.map((row) => row.teamId),
     [persistedDailyRows],
