@@ -52,17 +52,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-        continue-on-error: true
-
-      - name: Wait before retrying deployment
-        if: steps.deployment.outcome == 'failure'
-        run: sleep 20
-
-      - name: Retry GitHub Pages deployment
-        id: deployment_retry
-        if: steps.deployment.outcome == 'failure'
-        uses: actions/deploy-pages@v4
-
-      - name: Fail if deployment could not be recovered
-        if: steps.deployment.outcome == 'failure' && steps.deployment_retry.outcome == 'failure'
-        run: exit 1
