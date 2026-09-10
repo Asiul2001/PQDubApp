@@ -1093,6 +1093,11 @@ function getVoucherIdentityKey(entry) {
   return `${eventId}__${teamId}__${sourceSessionId}`;
 }
 
+function getVoucherCreatedMs(voucher) {
+  // Older vouchers did not always record createdAt, so retain their quiz date as a fallback.
+  return getTimestampMs(voucher?.createdAt) || getTimestampMs(voucher?.awardedAt);
+}
+
 function mergeVoucherDocs(primaryDocs = [], fallbackDocs = []) {
   const mergedById = new Map();
 
@@ -1333,14 +1338,14 @@ function buildVoucherEntries(_sessions = [], voucherDocs = [], pubQuizzes = [], 
   return voucherDocs
     .filter((voucher) => !voucher.deleted && (!visibleTeamId || voucher.teamId === visibleTeamId))
     .map((voucher) => normalizeStoredVoucher(voucher, pubQuizzes))
-    .sort((a, b) => getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt));
+    .sort((a, b) => getVoucherCreatedMs(b) - getVoucherCreatedMs(a));
 }
 
 function buildAllVoucherEntries(_allSessions = [], voucherDocs = [], pubQuizzes = []) {
   return voucherDocs
     .filter((voucher) => !voucher.deleted)
     .map((voucher) => normalizeStoredVoucher(voucher, pubQuizzes))
-    .sort((a, b) => getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt));
+    .sort((a, b) => getVoucherCreatedMs(b) - getVoucherCreatedMs(a));
 }
 
 function createEmptyPubQuizQuestion(roundIndex, questionIndex) {
@@ -9060,16 +9065,16 @@ function VoucherDirectory({
     allVoucherDocs,
     pubQuizzes,
   );
-  const voucherLatestPlayedByTeam = new Map();
+  const voucherLatestCreatedByTeam = new Map();
 
   allEffectiveVouchers.forEach((voucher) => {
     if (!voucher.teamId) return;
 
-    const currentMs = voucherLatestPlayedByTeam.get(voucher.teamId) || 0;
-    const voucherMs = getTimestampMs(voucher.awardedAt);
+    const currentMs = voucherLatestCreatedByTeam.get(voucher.teamId) || 0;
+    const voucherMs = getVoucherCreatedMs(voucher);
 
     if (voucherMs > currentMs) {
-      voucherLatestPlayedByTeam.set(voucher.teamId, voucherMs);
+      voucherLatestCreatedByTeam.set(voucher.teamId, voucherMs);
     }
   });
 
@@ -9106,7 +9111,8 @@ function VoucherDirectory({
     }, new Map(baseTeamDirectory.map((team) => [team.id, team]))).values(),
   ).sort((a, b) => {
     const voucherDifference =
-      (voucherLatestPlayedByTeam.get(b.id) || 0) - (voucherLatestPlayedByTeam.get(a.id) || 0);
+      (voucherLatestCreatedByTeam.get(b.id) || 0) -
+      (voucherLatestCreatedByTeam.get(a.id) || 0);
 
     if (voucherDifference !== 0) return voucherDifference;
 
@@ -9261,7 +9267,7 @@ function VoucherDirectory({
   const selectedEventVouchers = selectedEventVoucherCandidates
     .sort(
       (a, b) =>
-        getTimestampMs(b.awardedAt) - getTimestampMs(a.awardedAt) ||
+        getVoucherCreatedMs(b) - getVoucherCreatedMs(a) ||
         (Number(a.rank) || Number.MAX_SAFE_INTEGER) -
           (Number(b.rank) || Number.MAX_SAFE_INTEGER) ||
         (a.teamName || "").localeCompare(b.teamName || ""),
@@ -9825,7 +9831,7 @@ function VoucherDirectory({
                             fontWeight: 700,
                           }}
                         >
-                          Gespielt am {formatCompletionDate(voucher.awardedAt)}
+                          Erstellt am {formatCompletionDate(getVoucherCreatedMs(voucher))}
                         </span>
                         <span style={{ display: "block", marginTop: 6, color: "#94a3b8" }}>
                           {voucher.totalPoints || 0} Punkte - Status{" "}
@@ -9985,9 +9991,9 @@ function VoucherDirectory({
                         fontWeight: 700,
                       }}
                     >
-                      Letzter Gewinn:{" "}
-                      {voucherLatestPlayedByTeam.get(team.id)
-                        ? formatCompletionDate(voucherLatestPlayedByTeam.get(team.id))
+                      Letzter Gutschein erstellt:{" "}
+                      {voucherLatestCreatedByTeam.get(team.id)
+                        ? formatCompletionDate(voucherLatestCreatedByTeam.get(team.id))
                         : "unbekannt"}
                     </span>
                     <span style={{ display: "block", marginTop: 4, color: "#94a3b8" }}>
@@ -10022,9 +10028,9 @@ function VoucherDirectory({
                   fontSize: 16,
                 }}
               >
-                Letzter Gewinn:{" "}
-                {voucherLatestPlayedByTeam.get(selectedTeam.id)
-                  ? formatCompletionDate(voucherLatestPlayedByTeam.get(selectedTeam.id))
+                Letzter Gutschein erstellt:{" "}
+                {voucherLatestCreatedByTeam.get(selectedTeam.id)
+                  ? formatCompletionDate(voucherLatestCreatedByTeam.get(selectedTeam.id))
                   : "unbekannt"}
               </p>
               {selectedTeamVouchers.length === 0 ? (
@@ -10062,7 +10068,7 @@ function VoucherDirectory({
                             fontWeight: 700,
                           }}
                         >
-                          Gespielt am {formatCompletionDate(voucher.awardedAt)}
+                          Erstellt am {formatCompletionDate(getVoucherCreatedMs(voucher))}
                         </span>
                         <span style={{ display: "block", marginTop: 6, color: "#94a3b8" }}>
                           {voucher.totalPoints || 0} Punkte - Status{" "}
