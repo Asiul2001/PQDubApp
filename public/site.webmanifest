@@ -1,0 +1,17 @@
+{
+  "name": "Pub Quiz",
+  "short_name": "Pub Quiz",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#05233a",
+  "theme_color": "#05233a",
+  "icons": [
+    {
+      "src": "favicon.svg?v=3",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
