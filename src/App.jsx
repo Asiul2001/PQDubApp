@@ -5466,8 +5466,10 @@ function App() {
       ...currentState,
       teamName: teamName || teamId,
       questionVisible: true,
-      ...(action === "openAnswers"
-        ? { answersOpen: true, openedAt: serverTimestamp(), stoppedAt: null }
+      ...(action === "showQuestion"
+        ? { answersOpen: false, openedAt: null, stoppedAt: null }
+        : action === "openAnswers"
+          ? { answersOpen: true, openedAt: serverTimestamp(), stoppedAt: null }
         : action === "stopTimer"
           ? { answersOpen: true, stoppedAt: serverTimestamp() }
         : {}),
@@ -5715,7 +5717,6 @@ function App() {
           updatedAt: serverTimestamp(),
         });
       });
-      setAppView("ranking");
     } catch (error) {
       console.error("TIEBREAKER SUBMIT ERROR:", error);
     }
@@ -8005,7 +8006,6 @@ function RankingScreen({
   const [rankingMessage, setRankingMessage] = useState("");
   const [rankingActionBusy, setRankingActionBusy] = useState(false);
   const isNarrow = useIsNarrowScreen();
-  const dailyRanking = getDailyRankingWithTiebreakers(registeredTeams, lobbyData);
   const fallbackDailyRows = useMemo(
     () => buildDailyRankingRows(registeredTeams, lobbyData),
     [registeredTeams, lobbyData],
@@ -8120,10 +8120,6 @@ function RankingScreen({
   const hasUnsavedDailyOrder =
     editableDailyRows.map((row) => row.teamId).join("|") !==
     persistedDailyOrderTeamIds.join("|");
-  const hasDailyPodiumTie = dailyRanking.tieGroups.length > 0;
-  const currentTeamIsTiebreakerEligible = dailyRanking.tieGroups.some((group) =>
-    group.teams.some((team) => team.id === sessionId),
-  );
   const hasTiebreakerAnswer = Number.isFinite(Number(lobbyData?.tiebreakerAnswer));
   const currentTeamRank =
     dailyTeams.findIndex((team) => team.id === sessionId) + 1;
@@ -8343,29 +8339,6 @@ function RankingScreen({
           </p>
         ) : (
           <div style={{ display: "grid", gap: 10 }}>
-            {rankingTab === "daily" && hasDailyPodiumTie && currentTeamIsTiebreakerEligible && (
-              <div
-                style={{
-                  padding: 14,
-                  border: "1px solid #f59e0b",
-                  borderRadius: 12,
-                  background: "#451a03",
-                  color: "#fde68a",
-                }}
-              >
-                <strong>Schätzfrage für die Top 3</strong>
-                <p style={{ margin: "6px 0 0" }}>
-                  {hasTiebreakerAnswer
-                    ? "Gleichstände auf dem Podium werden nach der nächsten Schätzung sortiert."
-                    : "Es gibt einen Gleichstand für Platz 1, 2 oder 3. Das Personal kann die Schätzfrage im Personal-Bereich eintragen."}
-                </p>
-                {lobbyData?.tiebreakerQuestion && (
-                  <p style={{ margin: "8px 0 0" }}>
-                    {lobbyData.tiebreakerQuestion}
-                  </p>
-                )}
-              </div>
-            )}
             {rankingTeams.map((team, index) => (
               <div
                 key={team.id}
@@ -14380,12 +14353,14 @@ function TiebreakerTeamPanel({
             cursor: "pointer",
           }}
         >
-          {isActive ? "Schätzfrage öffnen" : "Bereit"}
+          {managerControlled ? "Dieses Handy benutzen" : isActive ? "Schätzfrage öffnen" : "Bereit"}
         </button>
       )}
 
       {isReady && !isActive && !claimedByAnotherDevice && (
-        <p style={{ marginBottom: 0 }}>Bereit. Die Schätzfrage startet, sobald alle betroffenen Teams bereit sind.</p>
+        <p style={{ marginBottom: 0 }}>
+          Dieses Handy ist ausgewählt. Wartet, bis das Personal die Antworten öffnet.
+        </p>
       )}
 
       {isActive && !submission && !claimedByAnotherDevice && isReady && (
