@@ -13697,8 +13697,10 @@ function LiveTiebreakerPanel({
       : String(lobbyData.tiebreakerAnswer),
   );
   const [editingEstimate, setEditingEstimate] = useState("");
+  const [isEditingAnswer, setIsEditingAnswer] = useState(false);
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [message, setMessage] = useState("");
+  const isNarrow = useIsNarrowScreen();
   const selectedTeam =
     teamStatuses.find((team) => team.id === selectedTeamId) || teamStatuses[0] || null;
   const submissions = getDailyRankingWithTiebreakers(teamStatuses, lobbyData).ranking
@@ -13741,7 +13743,10 @@ function LiveTiebreakerPanel({
       estimateValue: editingEstimate,
     });
     setMessage(result?.message || "");
-    if (result?.ok) setEditingEstimate("");
+    if (result?.ok) {
+      setEditingEstimate("");
+      setIsEditingAnswer(false);
+    }
   }
 
   return (
@@ -13774,8 +13779,8 @@ function LiveTiebreakerPanel({
         {message && <p style={{ color: "#fde68a" }}>{message}</p>}
       </section>
 
-      <section style={{ marginTop: 18, display: "grid", gridTemplateColumns: "minmax(220px, .8fr) minmax(0, 1.2fr)", gap: 16 }}>
-        <div style={{ display: "grid", gap: 8, alignSelf: "start" }}>
+      <section style={{ marginTop: 18, display: "grid", gridTemplateColumns: isNarrow ? "1fr" : "minmax(240px, .8fr) minmax(360px, 1.2fr)", gap: 16, alignItems: "start" }}>
+        <div style={{ display: "grid", gap: 10, alignSelf: "start" }}>
           {teamStatuses.map((team) => {
             const state = lobbyData?.tiebreakerTeamStates?.[team.id];
             const submission = getTiebreakerSubmission(lobbyData, team.id);
@@ -13785,36 +13790,42 @@ function LiveTiebreakerPanel({
               <button
                 key={team.id}
                 type="button"
-                onClick={() => setSelectedTeamId(team.id)}
+                onClick={() => {
+                  setSelectedTeamId(team.id);
+                  setEditingEstimate("");
+                  setIsEditingAnswer(false);
+                }}
                 style={{
                   textAlign: "left",
-                  padding: 12,
-                  borderRadius: 10,
-                  border: `1px solid ${selectedTeam?.id === team.id ? "#f59e0b" : submission ? "#22c55e" : "#334155"}`,
-                  background: submission ? "#052e16" : "#0b1220",
+                  padding: "14px 16px",
+                  borderRadius: 14,
+                  border: `1px solid ${selectedTeam?.id === team.id ? "#fbbf24" : submission ? "#22c55e" : state?.answersOpen ? "#f59e0b" : "#334155"}`,
+                  background: submission ? "linear-gradient(135deg, #052e16, #064e3b)" : state?.answersOpen ? "#241707" : "#0b1220",
                   color: "#e5e7eb",
                 }}
               >
-                <strong>{team.teamName}</strong>
-                <span style={{ display: "block", color: submission ? "#86efac" : "#94a3b8", marginTop: 4 }}>
+                <strong style={{ display: "block", fontSize: 17 }}>{team.teamName}</strong>
+                <span style={{ display: "block", color: submission ? "#86efac" : state?.answersOpen ? "#fcd34d" : state?.questionVisible ? "#7dd3fc" : "#94a3b8", marginTop: 4, fontWeight: submission ? 700 : 500 }}>
                   {submission
-                    ? `Abgegeben - Zeit fest: ${formatStopwatch(decisionAtMs - openedAtMs)}`
+                    ? `ABGEGEBEN | Zeit fest ${formatStopwatch(decisionAtMs - openedAtMs)}`
                     : state?.answersOpen
-                      ? "Antworten offen"
+                      ? "ANTWORTEN OFFEN"
                       : state?.questionVisible
-                        ? "Frage sichtbar"
-                        : "noch geschlossen"}
+                        ? "FRAGE SICHTBAR"
+                        : "NOCH GESCHLOSSEN"}
                 </span>
               </button>
             );
           })}
         </div>
-        <div style={{ padding: 16, border: "1px solid #334155", borderRadius: 14, background: "#0b1220" }}>
+        <div style={{ padding: isNarrow ? 16 : 20, border: "1px solid #334155", borderRadius: 16, background: "linear-gradient(145deg, #0b1220, #111827)", minWidth: 0 }}>
           {selectedTeam ? (
             <>
-              <h3 style={{ marginTop: 0 }}>{selectedTeam.teamName}</h3>
+              <h3 style={{ margin: "0 0 14px", fontSize: isNarrow ? 24 : 28 }}>{selectedTeam.teamName}</h3>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               <button type="button" onClick={() => updateSelectedTeam("showQuestion")}>Frage zeigen</button>
               <button type="button" onClick={() => updateSelectedTeam("openAnswers")} style={{ marginLeft: 10 }}>Antworten öffnen</button>
+              </div>
               {(() => {
                 const teamState = lobbyData?.tiebreakerTeamStates?.[selectedTeam.id];
                 const submission = getTiebreakerSubmission(lobbyData, selectedTeam.id);
@@ -13851,12 +13862,17 @@ function LiveTiebreakerPanel({
                 );
               })()}
               {getTiebreakerSubmission(lobbyData, selectedTeam.id) && (
-                <section style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #334155" }}>
+                <section style={{ marginTop: 16, padding: 14, border: "1px solid #22c55e", borderRadius: 12, background: "#052e16" }}>
                   <strong>Abgegebene Schätzung: {getTiebreakerSubmission(lobbyData, selectedTeam.id).estimate}</strong>
-                  <p style={{ margin: "6px 0", color: "#94a3b8" }}>
-                    Nur die Zahl kann korrigiert werden. Die gespeicherte Zeit bleibt fest.
+                  <p style={{ margin: "6px 0", color: "#bbf7d0" }}>
+                    Die Zeit ist fest gespeichert und kann nicht geändert werden.
                   </p>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {!isEditingAnswer ? (
+                    <button type="button" onClick={() => setIsEditingAnswer(true)} style={{ marginTop: 8, background: "#166534" }}>
+                      Antwort korrigieren
+                    </button>
+                  ) : (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
                     <input
                       type="number"
                       step="any"
@@ -13866,9 +13882,10 @@ function LiveTiebreakerPanel({
                       style={{ ...inputStyle, maxWidth: 220 }}
                     />
                     <button type="button" onClick={correctSelectedAnswer}>
-                      Antwort korrigieren
+                      Speichern
                     </button>
                   </div>
+                  )}
                 </section>
               )}
             </>
