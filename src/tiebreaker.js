@@ -38,7 +38,7 @@ export function getEstimateValue(lobbyData, teamId) {
   return Number.isFinite(estimate) ? estimate : null;
 }
 
-function getTiebreakerDecisionMs(lobbyData, teamId) {
+export function getTiebreakerDecisionMs(lobbyData, teamId) {
   return (
     getTimestampMs(lobbyData?.tiebreakerTeamStates?.[teamId]?.stoppedAt) ||
     getTimestampMs(getTiebreakerSubmission(lobbyData, teamId)?.submittedAt)

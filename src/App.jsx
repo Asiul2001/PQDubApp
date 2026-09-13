@@ -41,6 +41,7 @@ import {
 } from "./quizTiming";
 import {
   getDailyRankingWithTiebreakers,
+  getTiebreakerDecisionMs,
   getEstimateValue,
   getTeamTiebreakerAccess,
   getTiebreakerDistance,
@@ -5726,6 +5727,42 @@ function App() {
     }
   }
 
+  async function correctTiebreakerEstimate({ teamId, estimateValue }) {
+    if (!activeManager || !sessionData?.lobbyCode || !teamId) {
+      return { ok: false, message: "Antwort konnte nicht korrigiert werden." };
+    }
+
+    const estimate = Number(estimateValue);
+    if (!Number.isFinite(estimate)) {
+      return { ok: false, message: "Bitte eine gueltige Zahl eintragen." };
+    }
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const lobbyRef = getEventRef(sessionData.lobbyCode);
+        const snapshot = await transaction.get(lobbyRef);
+        const submission = snapshot.data()?.tiebreakerSubmissions?.[teamId];
+
+        if (!submission) throw new Error("Dieses Team hat noch keine Schätzung abgegeben.");
+
+        // Keep the original decision time intact while correcting only the value.
+        transaction.update(lobbyRef, {
+          [`tiebreakerSubmissions.${teamId}`]: {
+            ...submission,
+            estimate,
+            correctedAt: serverTimestamp(),
+            correctedBy: activeManager.name || activeManager.id || "Manager",
+          },
+          updatedAt: serverTimestamp(),
+        });
+      });
+      return { ok: true, message: "Antwort korrigiert. Die Zeit bleibt unveraendert." };
+    } catch (error) {
+      console.error("TIEBREAKER CORRECTION ERROR:", error);
+      return { ok: false, message: `Antwort konnte nicht korrigiert werden: ${error.message}` };
+    }
+  }
+
   async function submitFeedback(feedbackDraft) {
     if (!sessionData?.lobbyCode) return { ok: false, message: "Keine Lobby aktiv." };
 
@@ -6516,6 +6553,7 @@ function App() {
           onAddRoundExtraTime={addRoundExtraTime}
           onChangeAdminTab={setAdminTab}
           onCloseNewRegistrations={closeNewRegistrations}
+          onCorrectTiebreakerEstimate={correctTiebreakerEstimate}
           onCreateVoucherAssignment={createVoucherAssignment}
           onDeletePubQuiz={deletePubQuiz}
           onDeleteVoucherAssignment={deleteVoucherAssignment}
@@ -8962,6 +9000,7 @@ function AdminScreen({
   onAddRoundExtraTime,
   onChangeAdminTab,
   onCloseNewRegistrations,
+  onCorrectTiebreakerEstimate,
   onCreateVoucherAssignment,
   onDeletePubQuiz,
   onDeleteVoucherAssignment,
@@ -9140,6 +9179,7 @@ function AdminScreen({
             now={now}
             onAddRoundExtraTime={onAddRoundExtraTime}
             onCloseNewRegistrations={onCloseNewRegistrations}
+            onCorrectTiebreakerEstimate={onCorrectTiebreakerEstimate}
             onRevealRoundAnswers={onRevealRoundAnswers}
             onReopenNewRegistrations={onReopenNewRegistrations}
             onFinishDemoRound={onFinishDemoRound}
@@ -11713,6 +11753,7 @@ function LiveControlPanel({
   now,
   onAddRoundExtraTime,
   onCloseNewRegistrations,
+  onCorrectTiebreakerEstimate,
   onFinishDemoRound,
   onRevealRoundAnswers,
   onReopenNewRegistrations,
@@ -11914,6 +11955,7 @@ function LiveControlPanel({
           setLiveTab(roundId);
           onRoundChange(roundId);
         }}
+        onCorrectAnswer={onCorrectTiebreakerEstimate}
         onSaveSetup={onSaveTiebreakerSetup}
         onSetTeamState={onSetTeamTiebreakerState}
         quizRounds={quizRounds}
@@ -13641,6 +13683,7 @@ function WaitingRoomScreen({
 function LiveTiebreakerPanel({
   lobbyData,
   now,
+  onCorrectAnswer,
   onOpenRound,
   onSaveSetup,
   onSetTeamState,
@@ -13653,6 +13696,7 @@ function LiveTiebreakerPanel({
       ? ""
       : String(lobbyData.tiebreakerAnswer),
   );
+  const [editingEstimate, setEditingEstimate] = useState("");
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [message, setMessage] = useState("");
   const selectedTeam =
@@ -13693,6 +13737,17 @@ function LiveTiebreakerPanel({
       teamName: selectedTeam.teamName,
     });
     setMessage(result?.message || "");
+  }
+
+  async function correctSelectedAnswer() {
+    if (!selectedTeam) return;
+
+    const result = await onCorrectAnswer?.({
+      teamId: selectedTeam.id,
+      estimateValue: editingEstimate,
+    });
+    setMessage(result?.message || "");
+    if (result?.ok) setEditingEstimate("");
   }
 
   return (
@@ -13751,8 +13806,17 @@ function LiveTiebreakerPanel({
                 const submission = getTiebreakerSubmission(lobbyData, selectedTeam.id);
                 const stoppedAtMs = getTimestampMs(teamState?.stoppedAt);
                 const openedAtMs = getTimestampMs(teamState?.openedAt);
+                const decisionAtMs = getTiebreakerDecisionMs(lobbyData, selectedTeam.id);
 
-                if (!teamState?.answersOpen || submission) return null;
+                if (!teamState?.answersOpen) return null;
+
+                if (submission) {
+                  return (
+                    <p style={{ color: "#fde68a" }}>
+                      Zeit fest: {formatStopwatch(decisionAtMs - openedAtMs)}
+                    </p>
+                  );
+                }
 
                 return (
                   <>
@@ -13772,6 +13836,27 @@ function LiveTiebreakerPanel({
                   </>
                 );
               })()}
+              {getTiebreakerSubmission(lobbyData, selectedTeam.id) && (
+                <section style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #334155" }}>
+                  <strong>Abgegebene Schätzung: {getTiebreakerSubmission(lobbyData, selectedTeam.id).estimate}</strong>
+                  <p style={{ margin: "6px 0", color: "#94a3b8" }}>
+                    Nur die Zahl kann korrigiert werden. Die gespeicherte Zeit bleibt fest.
+                  </p>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <input
+                      type="number"
+                      step="any"
+                      value={editingEstimate}
+                      onChange={(event) => setEditingEstimate(event.target.value)}
+                      placeholder="Korrigierte Schätzung"
+                      style={{ ...inputStyle, maxWidth: 220 }}
+                    />
+                    <button type="button" onClick={correctSelectedAnswer}>
+                      Antwort korrigieren
+                    </button>
+                  </div>
+                </section>
+              )}
             </>
           ) : <p>Kein Team angemeldet.</p>}
         </div>
@@ -13781,7 +13866,7 @@ function LiveTiebreakerPanel({
         <h3 style={{ marginTop: 0 }}>Fertige Reihenfolge (nur Personal)</h3>
         {submissions.length === 0 ? <p style={{ color: "#94a3b8" }}>Noch keine Schätzung abgegeben.</p> : submissions.map((team, index) => (
           <p key={team.id} style={{ margin: "8px 0" }}>
-            <strong>{index + 1}. {team.teamName}</strong> - {team.submission.estimate} - Abstand {team.distance} - {formatStopwatch(team.submittedAt - getTimestampMs(lobbyData?.tiebreakerTeamStates?.[team.id]?.openedAt || lobbyData?.tiebreakerStartedAt))}
+            <strong>{index + 1}. {team.teamName}</strong> - {team.submission.estimate} - Abstand {team.distance} - {formatStopwatch(getTiebreakerDecisionMs(lobbyData, team.id) - getTimestampMs(lobbyData?.tiebreakerTeamStates?.[team.id]?.openedAt || lobbyData?.tiebreakerStartedAt))}
           </p>
         ))}
       </section>
