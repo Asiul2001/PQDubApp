@@ -42,6 +42,7 @@ import {
 import {
   getDailyRankingWithTiebreakers,
   getTiebreakerDecisionMs,
+  getTiebreakerElapsedMs,
   getEstimateValue,
   getTeamTiebreakerAccess,
   getTiebreakerDistance,
@@ -5467,16 +5468,41 @@ function App() {
     }
 
     const currentState = lobbyData?.tiebreakerTeamStates?.[teamId] || {};
+    const submission = getTiebreakerSubmission(lobbyData, teamId);
+    if (action === "showQuestion" && currentState.questionVisible) {
+      return { ok: true, message: "Die Frage wurde diesem Team bereits gezeigt." };
+    }
+    if (action === "openAnswers" && currentState.answersOpen) {
+      return { ok: true, message: "Die Antworten sind für dieses Team bereits geöffnet." };
+    }
+    if (action === "stopTimer" && (!currentState.answersOpen || currentState.stoppedAt || submission)) {
+      return { ok: false, message: "Diese Zeit kann nicht mehr gestoppt werden." };
+    }
+    if (action === "resumeTimer" && (!currentState.answersOpen || !currentState.stoppedAt || submission)) {
+      return { ok: false, message: "Diese Zeit kann nicht fortgesetzt werden." };
+    }
+    if (action === "openAnswers" && !currentState.questionVisible) {
+      return { ok: false, message: "Bitte zuerst die Frage zeigen." };
+    }
     const nextState = {
       ...currentState,
       teamName: teamName || teamId,
       questionVisible: true,
       ...(action === "showQuestion"
-        ? { answersOpen: false, openedAt: null, stoppedAt: null }
+        ? { answersOpen: false, elapsedBeforePauseMs: 0, openedAt: null, stoppedAt: null }
         : action === "openAnswers"
-          ? { answersOpen: true, openedAt: serverTimestamp(), stoppedAt: null }
+          ? { answersOpen: true, elapsedBeforePauseMs: 0, openedAt: serverTimestamp(), stoppedAt: null }
         : action === "stopTimer"
           ? { answersOpen: true, stoppedAt: serverTimestamp() }
+          : action === "resumeTimer"
+            ? {
+                answersOpen: true,
+                elapsedBeforePauseMs:
+                  (Number(currentState.elapsedBeforePauseMs) || 0) +
+                  Math.max(0, getTimestampMs(currentState.stoppedAt) - getTimestampMs(currentState.openedAt)),
+                openedAt: serverTimestamp(),
+                stoppedAt: null,
+              }
         : {}),
     };
 
@@ -5486,6 +5512,9 @@ function App() {
         tiebreakerStatus: "active",
         updatedAt: serverTimestamp(),
       });
+      if (action === "resumeTimer") {
+        return { ok: true, message: `Zeit für ${teamName || teamId} fortgesetzt.` };
+      }
       return {
         ok: true,
         message:
@@ -13698,11 +13727,14 @@ function LiveTiebreakerPanel({
   );
   const [editingEstimate, setEditingEstimate] = useState("");
   const [isEditingAnswer, setIsEditingAnswer] = useState(false);
+  const [isTeamActionBusy, setIsTeamActionBusy] = useState(false);
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [message, setMessage] = useState("");
   const isNarrow = useIsNarrowScreen();
   const selectedTeam =
     teamStatuses.find((team) => team.id === selectedTeamId) || teamStatuses[0] || null;
+  const selectedTeamState = lobbyData?.tiebreakerTeamStates?.[selectedTeam?.id] || null;
+  const selectedTeamSubmission = getTiebreakerSubmission(lobbyData, selectedTeam?.id);
   const submissions = getDailyRankingWithTiebreakers(teamStatuses, lobbyData).ranking
     .map((team) => {
       const submission = getTiebreakerSubmission(lobbyData, team.id);
@@ -13725,14 +13757,19 @@ function LiveTiebreakerPanel({
   }
 
   async function updateSelectedTeam(action) {
-    if (!selectedTeam) return;
+    if (!selectedTeam || isTeamActionBusy) return;
 
-    const result = await onSetTeamState?.({
-      action,
-      teamId: selectedTeam.id,
-      teamName: selectedTeam.teamName,
-    });
-    setMessage(result?.message || "");
+    setIsTeamActionBusy(true);
+    try {
+      const result = await onSetTeamState?.({
+        action,
+        teamId: selectedTeam.id,
+        teamName: selectedTeam.teamName,
+      });
+      setMessage(result?.message || "");
+    } finally {
+      setIsTeamActionBusy(false);
+    }
   }
 
   async function correctSelectedAnswer() {
@@ -13784,8 +13821,7 @@ function LiveTiebreakerPanel({
           {teamStatuses.map((team) => {
             const state = lobbyData?.tiebreakerTeamStates?.[team.id];
             const submission = getTiebreakerSubmission(lobbyData, team.id);
-            const openedAtMs = getTimestampMs(state?.openedAt || lobbyData?.tiebreakerStartedAt);
-            const decisionAtMs = getTiebreakerDecisionMs(lobbyData, team.id);
+            const elapsedMs = getTiebreakerElapsedMs(lobbyData, team.id, now);
             return (
               <button
                 key={team.id}
@@ -13807,7 +13843,7 @@ function LiveTiebreakerPanel({
                 <strong style={{ display: "block", fontSize: 17 }}>{team.teamName}</strong>
                 <span style={{ display: "block", color: submission ? "#86efac" : state?.answersOpen ? "#fcd34d" : state?.questionVisible ? "#7dd3fc" : "#94a3b8", marginTop: 4, fontWeight: submission ? 700 : 500 }}>
                   {submission
-                    ? `ABGEGEBEN | Zeit fest ${formatStopwatch(decisionAtMs - openedAtMs)}`
+                    ? `ABGEGEBEN | Zeit fest ${formatStopwatch(elapsedMs)}`
                     : state?.answersOpen
                       ? "ANTWORTEN OFFEN"
                       : state?.questionVisible
@@ -13823,22 +13859,21 @@ function LiveTiebreakerPanel({
             <>
               <h3 style={{ margin: "0 0 14px", fontSize: isNarrow ? 24 : 28 }}>{selectedTeam.teamName}</h3>
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button type="button" onClick={() => updateSelectedTeam("showQuestion")}>Frage zeigen</button>
-              <button type="button" onClick={() => updateSelectedTeam("openAnswers")} style={{ marginLeft: 10 }}>Antworten öffnen</button>
+              <button type="button" disabled={isTeamActionBusy || Boolean(selectedTeamState?.questionVisible)} onClick={() => updateSelectedTeam("showQuestion")}>Frage zeigen</button>
+              <button type="button" disabled={isTeamActionBusy || Boolean(selectedTeamState?.answersOpen) || Boolean(selectedTeamSubmission)} onClick={() => updateSelectedTeam("openAnswers")} style={{ marginLeft: 10 }}>Antworten öffnen</button>
               </div>
               {(() => {
                 const teamState = lobbyData?.tiebreakerTeamStates?.[selectedTeam.id];
                 const submission = getTiebreakerSubmission(lobbyData, selectedTeam.id);
                 const stoppedAtMs = getTimestampMs(teamState?.stoppedAt);
-                const openedAtMs = getTimestampMs(teamState?.openedAt);
-                const decisionAtMs = getTiebreakerDecisionMs(lobbyData, selectedTeam.id);
+                const elapsedMs = getTiebreakerElapsedMs(lobbyData, selectedTeam.id, now);
 
                 if (!teamState?.answersOpen) return null;
 
                 if (submission) {
                   return (
                     <p style={{ color: "#fde68a" }}>
-                      Zeit fest: {formatStopwatch(decisionAtMs - openedAtMs)}
+                      Zeit fest: {formatStopwatch(elapsedMs)}
                     </p>
                   );
                 }
@@ -13848,14 +13883,25 @@ function LiveTiebreakerPanel({
                     {!stoppedAtMs && (
                       <button
                         type="button"
+                        disabled={isTeamActionBusy}
                         onClick={() => updateSelectedTeam("stopTimer")}
                         style={{ marginLeft: 10, background: "#b45309", color: "#fff7ed" }}
                       >
                         Zeit stoppen
                       </button>
                     )}
+                    {stoppedAtMs && (
+                      <button
+                        type="button"
+                        disabled={isTeamActionBusy}
+                        onClick={() => updateSelectedTeam("resumeTimer")}
+                        style={{ marginLeft: 10, background: "#15803d", color: "#f0fdf4" }}
+                      >
+                        Zeit fortsetzen
+                      </button>
+                    )}
                     <p style={{ fontSize: 32, fontWeight: 800, color: "#fde68a" }}>
-                      {formatStopwatch((stoppedAtMs || now) - openedAtMs)}
+                      {formatStopwatch(elapsedMs)}
                       {stoppedAtMs ? " - gestoppt" : ""}
                     </p>
                   </>
@@ -13897,7 +13943,7 @@ function LiveTiebreakerPanel({
         <h3 style={{ marginTop: 0 }}>Fertige Reihenfolge (nur Personal)</h3>
         {submissions.length === 0 ? <p style={{ color: "#94a3b8" }}>Noch keine Schätzung abgegeben.</p> : submissions.map((team, index) => (
           <p key={team.id} style={{ margin: "8px 0", color: "#bbf7d0" }}>
-            <strong>{index + 1}. {team.teamName}</strong> - Antwort {team.submission.estimate} - Abstand {team.distance} - Zeit fest: {formatStopwatch(team.decisionAt - getTimestampMs(lobbyData?.tiebreakerTeamStates?.[team.id]?.openedAt || lobbyData?.tiebreakerStartedAt))}
+            <strong>{index + 1}. {team.teamName}</strong> - Antwort {team.submission.estimate} - Abstand {team.distance} - Zeit fest: {formatStopwatch(getTiebreakerElapsedMs(lobbyData, team.id, team.decisionAt))}
           </p>
         ))}
       </section>
@@ -14410,9 +14456,11 @@ function TiebreakerTeamPanel({
   const distance = getTiebreakerDistance(lobbyData, sessionId);
   const stoppedAtMs = getTimestampMs(teamState?.stoppedAt);
   const elapsedMs = isActive
-    ? (submission
-        ? stoppedAtMs || getTimestampMs(submission.submittedAt)
-        : stoppedAtMs || now) - getTimestampMs(teamState?.openedAt || lobbyData?.tiebreakerStartedAt)
+    ? getTiebreakerElapsedMs(
+        lobbyData,
+        sessionId,
+        submission ? stoppedAtMs || getTimestampMs(submission.submittedAt) : now,
+      )
     : 0;
 
   async function handleSubmit(e) {

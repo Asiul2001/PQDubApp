@@ -5,6 +5,7 @@ import {
   getDailyRankingWithTiebreakers,
   getMaximumPossiblePoints,
   getTeamTiebreakerAccess,
+  getTiebreakerElapsedMs,
   getTiebreakerState,
 } from "../src/tiebreaker.js";
 import { isRoundFinished } from "../src/quizTiming.js";
@@ -92,6 +93,26 @@ test("identical correct estimates are decided by each team's stopped or submitte
   const ranking = getDailyRankingWithTiebreakers(teams, lobbyData).ranking.map((team) => team.id);
 
   assert.deepEqual(ranking, ["alpha", "beta"]);
+});
+
+test("resuming a paused tiebreaker timer excludes the clarification break", () => {
+  const lobbyData = {
+    tiebreakerTeamStates: {
+      alpha: {
+        elapsedBeforePauseMs: 10_000,
+        openedAt: new Date("2026-05-25T20:02:00.000Z"),
+        stoppedAt: null,
+      },
+    },
+  };
+
+  const elapsedMs = getTiebreakerElapsedMs(
+    lobbyData,
+    "alpha",
+    new Date("2026-05-25T20:02:03.250Z"),
+  );
+
+  assert.equal(elapsedMs, 13_250);
 });
 
 test("team-controlled tiebreaker question is visible and answerable only by the selected team device", () => {

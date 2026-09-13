@@ -45,6 +45,17 @@ export function getTiebreakerDecisionMs(lobbyData, teamId) {
   );
 }
 
+export function getTiebreakerElapsedMs(lobbyData, teamId, now = Date.now()) {
+  const teamState = lobbyData?.tiebreakerTeamStates?.[teamId] || {};
+  const elapsedBeforePauseMs = Number(teamState.elapsedBeforePauseMs) || 0;
+  const openedAtMs = getTimestampMs(teamState.openedAt || lobbyData?.tiebreakerStartedAt);
+
+  if (!openedAtMs) return Math.max(0, elapsedBeforePauseMs);
+
+  const endpointMs = getTimestampMs(teamState.stoppedAt) || getTimestampMs(now);
+  return Math.max(0, elapsedBeforePauseMs + endpointMs - openedAtMs);
+}
+
 export function getTiebreakerDistance(lobbyData, teamId) {
   const answer = Number(lobbyData?.tiebreakerAnswer);
   const estimate = getEstimateValue(lobbyData, teamId);
