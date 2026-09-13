@@ -42,6 +42,7 @@ import {
 import {
   getDailyRankingWithTiebreakers,
   getEstimateValue,
+  getTeamTiebreakerAccess,
   getTiebreakerDistance,
   getTiebreakerParticipant,
   getTiebreakerState,
@@ -14276,16 +14277,16 @@ function TiebreakerTeamPanel({
   teamName,
 }) {
   const [estimate, setEstimate] = useState("");
-  const teamState = lobbyData?.tiebreakerTeamStates?.[sessionId] || null;
-  const managerControlled = Boolean(teamState?.questionVisible);
+  const teamAccess = getTeamTiebreakerAccess({ lobbyData, teamId: sessionId, clientId });
+  const teamState = teamAccess.teamState;
+  const managerControlled = teamAccess.questionVisible;
   const isReady = Boolean(lobbyData?.tiebreakerReady?.[sessionId]);
   const isActive = managerControlled
-    ? Boolean(teamState?.answersOpen)
+    ? teamAccess.answersOpen
     : lobbyData?.tiebreakerStatus === "active";
-  const participant = getTiebreakerParticipant(lobbyData, sessionId);
-  const claimedByAnotherDevice =
-    Boolean(participant?.clientId) && participant.clientId !== clientId;
-  const submission = getTiebreakerSubmission(lobbyData, sessionId);
+  const participant = teamAccess.participant;
+  const claimedByAnotherDevice = teamAccess.claimedByAnotherDevice;
+  const submission = teamAccess.submission;
   const answer = Number(lobbyData?.tiebreakerAnswer);
   const distance = getTiebreakerDistance(lobbyData, sessionId);
   const stoppedAtMs = getTimestampMs(teamState?.stoppedAt);
@@ -14363,7 +14364,7 @@ function TiebreakerTeamPanel({
         </p>
       )}
 
-      {isActive && !submission && !claimedByAnotherDevice && isReady && (
+      {isActive && !submission && !claimedByAnotherDevice && isReady && teamAccess.isClaimedOnThisDevice && (
         <form onSubmit={handleSubmit} style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <input
             type="number"

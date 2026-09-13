@@ -8,6 +8,29 @@ export function getTiebreakerParticipant(lobbyData, teamId) {
   return lobbyData?.tiebreakerParticipants?.[teamId] || null;
 }
 
+export function getTeamTiebreakerAccess({ lobbyData, teamId, clientId }) {
+  const teamState = lobbyData?.tiebreakerTeamStates?.[teamId] || null;
+  const participant = getTiebreakerParticipant(lobbyData, teamId);
+  const submission = getTiebreakerSubmission(lobbyData, teamId);
+  const questionVisible = Boolean(teamState?.questionVisible);
+  const answersOpen = Boolean(teamState?.answersOpen);
+  const claimedByAnotherDevice =
+    Boolean(participant?.clientId) && participant.clientId !== clientId;
+  const isClaimedOnThisDevice = participant?.clientId === clientId;
+
+  return {
+    answersOpen,
+    canClaimDevice: questionVisible && !submission && !participant,
+    canSubmit: questionVisible && answersOpen && isClaimedOnThisDevice && !submission,
+    claimedByAnotherDevice,
+    isClaimedOnThisDevice,
+    participant,
+    questionVisible,
+    submission,
+    teamState,
+  };
+}
+
 export function getEstimateValue(lobbyData, teamId) {
   const rawEstimate = getTiebreakerSubmission(lobbyData, teamId)?.estimate;
   const estimate = Number(rawEstimate);

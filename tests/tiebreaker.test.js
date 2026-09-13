@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   getDailyRankingWithTiebreakers,
   getMaximumPossiblePoints,
+  getTeamTiebreakerAccess,
   getTiebreakerState,
 } from "../src/tiebreaker.js";
 import { isRoundFinished } from "../src/quizTiming.js";
@@ -73,6 +74,47 @@ test("a stopped tiebreaker clock decides equal estimates before final submission
   const ranking = getDailyRankingWithTiebreakers(teams, lobbyData).ranking.map((team) => team.id);
 
   assert.deepEqual(ranking, ["alpha", "beta"]);
+});
+
+test("team-controlled tiebreaker question is visible and answerable only by the selected team device", () => {
+  const lobbyData = {
+    tiebreakerTeamStates: {
+      alpha: { questionVisible: true, answersOpen: false },
+    },
+  };
+
+  const alphaBeforeOpen = getTeamTiebreakerAccess({
+    lobbyData,
+    teamId: "alpha",
+    clientId: "alpha-phone",
+  });
+  const beta = getTeamTiebreakerAccess({
+    lobbyData,
+    teamId: "beta",
+    clientId: "beta-phone",
+  });
+
+  assert.equal(alphaBeforeOpen.questionVisible, true);
+  assert.equal(alphaBeforeOpen.canClaimDevice, true);
+  assert.equal(alphaBeforeOpen.canSubmit, false);
+  assert.equal(beta.questionVisible, false);
+
+  const alphaAnswersOpen = getTeamTiebreakerAccess({
+    lobbyData: {
+      ...lobbyData,
+      tiebreakerTeamStates: {
+        alpha: { questionVisible: true, answersOpen: true },
+      },
+      tiebreakerParticipants: {
+        alpha: { clientId: "alpha-phone" },
+      },
+    },
+    teamId: "alpha",
+    clientId: "alpha-phone",
+  });
+
+  assert.equal(alphaAnswersOpen.canSubmit, true);
+  assert.equal(alphaAnswersOpen.claimedByAnotherDevice, false);
 });
 
 test("maximum possible points include unanswered final-round questions", () => {
