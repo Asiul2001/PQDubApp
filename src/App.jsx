@@ -13701,7 +13701,7 @@ function LiveTiebreakerPanel({
   const [message, setMessage] = useState("");
   const selectedTeam =
     teamStatuses.find((team) => team.id === selectedTeamId) || teamStatuses[0] || null;
-  const submissions = teamStatuses
+  const submissions = getDailyRankingWithTiebreakers(teamStatuses, lobbyData).ranking
     .map((team) => {
       const submission = getTiebreakerSubmission(lobbyData, team.id);
       const distance = getTiebreakerDistance(lobbyData, team.id);
@@ -13710,18 +13710,12 @@ function LiveTiebreakerPanel({
         ? {
             ...team,
             distance: distance ?? Number.POSITIVE_INFINITY,
-            submittedAt: getTimestampMs(submission.submittedAt),
+            decisionAt: getTiebreakerDecisionMs(lobbyData, team.id),
             submission,
           }
         : null;
     })
-    .filter(Boolean)
-    .sort(
-      (a, b) =>
-        a.distance - b.distance ||
-        a.submittedAt - b.submittedAt ||
-        a.teamName.localeCompare(b.teamName),
-    );
+    .filter(Boolean);
 
   async function saveSetup() {
     const result = await onSaveSetup?.({ question, answer });
@@ -13785,11 +13779,31 @@ function LiveTiebreakerPanel({
           {teamStatuses.map((team) => {
             const state = lobbyData?.tiebreakerTeamStates?.[team.id];
             const submission = getTiebreakerSubmission(lobbyData, team.id);
+            const openedAtMs = getTimestampMs(state?.openedAt || lobbyData?.tiebreakerStartedAt);
+            const decisionAtMs = getTiebreakerDecisionMs(lobbyData, team.id);
             return (
-              <button key={team.id} type="button" onClick={() => setSelectedTeamId(team.id)} style={{ textAlign: "left", padding: 12, borderRadius: 10, border: `1px solid ${selectedTeam?.id === team.id ? "#f59e0b" : "#334155"}`, background: "#0b1220", color: "#e5e7eb" }}>
+              <button
+                key={team.id}
+                type="button"
+                onClick={() => setSelectedTeamId(team.id)}
+                style={{
+                  textAlign: "left",
+                  padding: 12,
+                  borderRadius: 10,
+                  border: `1px solid ${selectedTeam?.id === team.id ? "#f59e0b" : submission ? "#22c55e" : "#334155"}`,
+                  background: submission ? "#052e16" : "#0b1220",
+                  color: "#e5e7eb",
+                }}
+              >
                 <strong>{team.teamName}</strong>
-                <span style={{ display: "block", color: "#94a3b8", marginTop: 4 }}>
-                  {submission ? "abgegeben" : state?.answersOpen ? "Antworten offen" : state?.questionVisible ? "Frage sichtbar" : "noch geschlossen"}
+                <span style={{ display: "block", color: submission ? "#86efac" : "#94a3b8", marginTop: 4 }}>
+                  {submission
+                    ? `Abgegeben - Zeit fest: ${formatStopwatch(decisionAtMs - openedAtMs)}`
+                    : state?.answersOpen
+                      ? "Antworten offen"
+                      : state?.questionVisible
+                        ? "Frage sichtbar"
+                        : "noch geschlossen"}
                 </span>
               </button>
             );
@@ -13865,8 +13879,8 @@ function LiveTiebreakerPanel({
       <section style={{ marginTop: 18, padding: 16, border: "1px solid #334155", borderRadius: 14, background: "#0b1220" }}>
         <h3 style={{ marginTop: 0 }}>Fertige Reihenfolge (nur Personal)</h3>
         {submissions.length === 0 ? <p style={{ color: "#94a3b8" }}>Noch keine Schätzung abgegeben.</p> : submissions.map((team, index) => (
-          <p key={team.id} style={{ margin: "8px 0" }}>
-            <strong>{index + 1}. {team.teamName}</strong> - {team.submission.estimate} - Abstand {team.distance} - {formatStopwatch(getTiebreakerDecisionMs(lobbyData, team.id) - getTimestampMs(lobbyData?.tiebreakerTeamStates?.[team.id]?.openedAt || lobbyData?.tiebreakerStartedAt))}
+          <p key={team.id} style={{ margin: "8px 0", color: "#bbf7d0" }}>
+            <strong>{index + 1}. {team.teamName}</strong> - Antwort {team.submission.estimate} - Abstand {team.distance} - Zeit fest: {formatStopwatch(team.decisionAt - getTimestampMs(lobbyData?.tiebreakerTeamStates?.[team.id]?.openedAt || lobbyData?.tiebreakerStartedAt))}
           </p>
         ))}
       </section>
