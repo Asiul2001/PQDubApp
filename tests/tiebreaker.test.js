@@ -76,6 +76,24 @@ test("a stopped tiebreaker clock decides equal estimates before final submission
   assert.deepEqual(ranking, ["alpha", "beta"]);
 });
 
+test("identical correct estimates are decided by each team's stopped or submitted time", () => {
+  const teams = [createTeam("alpha", 10), createTeam("beta", 10)];
+  const lobbyData = {
+    tiebreakerAnswer: 200,
+    tiebreakerSubmissions: {
+      alpha: { estimate: 200, submittedAt: new Date("2026-05-25T20:00:20.000Z") },
+      beta: { estimate: 200, submittedAt: new Date("2026-05-25T20:00:10.000Z") },
+    },
+    tiebreakerTeamStates: {
+      alpha: { stoppedAt: new Date("2026-05-25T20:00:05.000Z") },
+    },
+  };
+
+  const ranking = getDailyRankingWithTiebreakers(teams, lobbyData).ranking.map((team) => team.id);
+
+  assert.deepEqual(ranking, ["alpha", "beta"]);
+});
+
 test("team-controlled tiebreaker question is visible and answerable only by the selected team device", () => {
   const lobbyData = {
     tiebreakerTeamStates: {
