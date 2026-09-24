@@ -1,5 +1,11 @@
 # Project Versions
 
+## 1.8.1 - 2026-09-24
+
+- Added the detailed product, technical, security, and delivery baseline in `PROJECT_STATUS.md`.
+- Documented actual Schaetzfrage, voucher, ranking, demo, and Firestore behavior.
+- Recorded open decisions and prioritized reliability, cost, and authorization work.
+
 ## 1.8.0 - 2026-09-24
 
 - Hardened the live Schätzfrage flow with Firestore-backed state transitions.
