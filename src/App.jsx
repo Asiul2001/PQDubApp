@@ -2274,7 +2274,7 @@ function App() {
   );
   const shouldLoadGlobalTeamIndex = Boolean(appView === "ranking");
   const shouldLoadAllTeamSessions = Boolean(
-    shouldLoadArchiveData || appView === "vouchers" || shouldLoadGlobalTeamIndex,
+    shouldLoadArchiveData || shouldLoadGlobalTeamIndex,
   );
 
   useEffect(() => {
@@ -2555,13 +2555,12 @@ function App() {
 
   useEffect(() => {
     if (appView !== "vouchers") return undefined;
-    if (!sessionData) {
+    if (!sessionData?.teamId && !sessionId && !sessionData?.teamNameNormalized) {
       setTeamHistorySessions([]);
       return undefined;
     }
 
     let cancelled = false;
-    const quizEventsRef = collection(db, "quizEvents");
     const targetTeamId =
       sessionData.teamId || sessionId || sessionData.teamNameNormalized || "";
 
@@ -2572,23 +2571,22 @@ function App() {
       }
 
       try {
-        const eventsSnapshot = await getDocs(quizEventsRef);
-        const sessionSnapshots = await Promise.all(
-          eventsSnapshot.docs.map((eventDoc) =>
-            getDoc(doc(db, "quizEvents", eventDoc.id, "teamSessions", targetTeamId)),
+        const sessionSnapshot = await getDocs(
+          query(
+            collectionGroup(db, "teamSessions"),
+            where("teamId", "==", targetTeamId),
           ),
         );
 
         if (cancelled) return;
 
-        const sessions = sessionSnapshots
-          .filter((snapshot) => snapshot.exists())
-          .map((snapshot) => {
-            const data = snapshot.data();
+        const sessions = sessionSnapshot.docs
+          .map((teamSessionDoc) => {
+            const data = teamSessionDoc.data();
 
             return {
-              id: snapshot.id,
-              sessionKey: `${data.eventId || "event"}__${snapshot.id}`,
+              id: teamSessionDoc.id,
+              sessionKey: `${data.eventId || "event"}__${teamSessionDoc.id}`,
               ...data,
             };
           })
@@ -2609,7 +2607,12 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [appView, sessionData, sessionId]);
+  }, [
+    appView,
+    sessionData?.teamId,
+    sessionData?.teamNameNormalized,
+    sessionId,
+  ]);
 
   useEffect(() => {
     if (!activeManager) return undefined;
@@ -2629,24 +2632,6 @@ function App() {
       setFeedbackEntries(entries);
     });
   }, [activeManager]);
-
-  useEffect(() => {
-    if (!shouldLoadGlobalTeamIndex) return undefined;
-
-    const sessionsRef = collectionGroup(db, "teamSessions");
-
-    return onSnapshot(sessionsRef, (snapshot) => {
-      const teams = snapshot.docs
-        .map((teamDoc) => ({ id: teamDoc.id, ...teamDoc.data() }))
-        .filter((team) => team.quizId === latestQuizId)
-        .sort((a, b) => {
-          const timeDifference = getTimestampMs(b.updatedAt) - getTimestampMs(a.updatedAt);
-          return timeDifference || a.teamName.localeCompare(b.teamName);
-        });
-
-      setAllTeams(teams);
-    });
-  }, [shouldLoadGlobalTeamIndex]);
 
   useEffect(() => {
     if (!shouldLoadAllTeamSessions) return undefined;
@@ -2672,6 +2657,14 @@ function App() {
         });
 
       setAllTeamSessions(sessions);
+      setAllTeams(
+        sessions
+          .filter((team) => team.quizId === latestQuizId)
+          .sort((a, b) => {
+            const timeDifference = getTimestampMs(b.updatedAt) - getTimestampMs(a.updatedAt);
+            return timeDifference || a.teamName.localeCompare(b.teamName);
+          }),
+      );
     });
   }, [shouldLoadAllTeamSessions]);
 
@@ -2689,7 +2682,7 @@ function App() {
   }, [shouldLoadArchiveData]);
 
   useEffect(() => {
-    if (!shouldLoadArchiveData && appView !== "vouchers" && !shouldLoadGlobalTeamIndex) {
+    if (!shouldLoadArchiveData && appView !== "vouchers") {
       return undefined;
     }
 
@@ -2723,15 +2716,10 @@ function App() {
 
     loadHistoricalDailyRankings();
 
-    const unsubscribe = onSnapshot(quizEventsRef, () => {
-      loadHistoricalDailyRankings();
-    });
-
     return () => {
       cancelled = true;
-      unsubscribe();
     };
-  }, [appView, shouldLoadArchiveData, shouldLoadGlobalTeamIndex]);
+  }, [appView, shouldLoadArchiveData]);
 
   useEffect(() => {
     if (!shouldLoadArchiveData && appView !== "vouchers") return undefined;
