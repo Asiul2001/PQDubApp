@@ -5461,12 +5461,6 @@ function App() {
       return { ok: false, message: "Team konnte nicht aktualisiert werden." };
     }
 
-    const question = String(lobbyData?.tiebreakerQuestion || "").trim();
-    const answer = Number(lobbyData?.tiebreakerAnswer);
-    if (!question || !Number.isFinite(answer)) {
-      return { ok: false, message: "Bitte zuerst Schätzfrage und richtige Antwort speichern." };
-    }
-
     const currentState = lobbyData?.tiebreakerTeamStates?.[teamId] || {};
     const submission = getTiebreakerSubmission(lobbyData, teamId);
     if (action === "showQuestion" && currentState.questionVisible) {
@@ -5507,11 +5501,76 @@ function App() {
     };
 
     try {
-      await updateDoc(getEventRef(sessionData.lobbyCode), {
-        [`tiebreakerTeamStates.${teamId}`]: nextState,
-        tiebreakerStatus: "active",
-        updatedAt: serverTimestamp(),
+      let latestStateResult = { ok: true, message: "" };
+      await runTransaction(db, async (transaction) => {
+        const eventRef = getEventRef(sessionData.lobbyCode);
+        const eventSnapshot = await transaction.get(eventRef);
+        const eventData = eventSnapshot.data() || {};
+        const liveState = eventData.tiebreakerTeamStates?.[teamId] || {};
+        const liveSubmission = eventData.tiebreakerSubmissions?.[teamId];
+        const hasSavedSetup =
+          Boolean(String(eventData.tiebreakerQuestion || "").trim()) &&
+          Number.isFinite(Number(eventData.tiebreakerAnswer));
+
+        if (!hasSavedSetup) {
+          latestStateResult = {
+            ok: false,
+            message: "Bitte zuerst Schätzfrage und richtige Antwort speichern.",
+          };
+          return;
+        }
+
+        // Never let a delayed manager tab replay a one-time action.
+        if (
+          (action === "showQuestion" && liveState.questionVisible) ||
+          (action === "openAnswers" && (liveState.answersOpen || !liveState.questionVisible)) ||
+          (action === "stopTimer" && (!liveState.answersOpen || liveState.stoppedAt || liveSubmission)) ||
+          (action === "resumeTimer" && (!liveState.answersOpen || !liveState.stoppedAt || liveSubmission))
+        ) {
+          return;
+        }
+
+        const liveNextState = {
+          ...nextState,
+          ...liveState,
+          teamName: teamName || teamId,
+          questionVisible: true,
+        };
+
+        if (action === "showQuestion") {
+          Object.assign(liveNextState, {
+            answersOpen: false,
+            elapsedBeforePauseMs: 0,
+            openedAt: null,
+            stoppedAt: null,
+          });
+        } else if (action === "openAnswers") {
+          Object.assign(liveNextState, {
+            answersOpen: true,
+            elapsedBeforePauseMs: 0,
+            openedAt: serverTimestamp(),
+            stoppedAt: null,
+          });
+        } else if (action === "stopTimer") {
+          Object.assign(liveNextState, { answersOpen: true, stoppedAt: serverTimestamp() });
+        } else if (action === "resumeTimer") {
+          Object.assign(liveNextState, {
+            answersOpen: true,
+            elapsedBeforePauseMs:
+              (Number(liveState.elapsedBeforePauseMs) || 0) +
+              Math.max(0, getTimestampMs(liveState.stoppedAt) - getTimestampMs(liveState.openedAt)),
+            openedAt: serverTimestamp(),
+            stoppedAt: null,
+          });
+        }
+
+        transaction.update(eventRef, {
+          [`tiebreakerTeamStates.${teamId}`]: liveNextState,
+          tiebreakerStatus: "active",
+          updatedAt: serverTimestamp(),
+        });
       });
+      if (!latestStateResult.ok) return latestStateResult;
       if (action === "resumeTimer") {
         return { ok: true, message: `Zeit für ${teamName || teamId} fortgesetzt.` };
       }
@@ -13731,6 +13790,18 @@ function LiveTiebreakerPanel({
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [message, setMessage] = useState("");
   const isNarrow = useIsNarrowScreen();
+  const hasSavedSetup =
+    Boolean(String(lobbyData?.tiebreakerQuestion || "").trim()) &&
+    Number.isFinite(Number(lobbyData?.tiebreakerAnswer));
+
+  useEffect(() => {
+    setQuestion(lobbyData?.tiebreakerQuestion || "");
+    setAnswer(
+      lobbyData?.tiebreakerAnswer === undefined || lobbyData?.tiebreakerAnswer === null
+        ? ""
+        : String(lobbyData.tiebreakerAnswer),
+    );
+  }, [lobbyData?.tiebreakerAnswer, lobbyData?.tiebreakerQuestion]);
   const selectedTeam =
     teamStatuses.find((team) => team.id === selectedTeamId) || teamStatuses[0] || null;
   const selectedTeamState = lobbyData?.tiebreakerTeamStates?.[selectedTeam?.id] || null;
@@ -13802,7 +13873,9 @@ function LiveTiebreakerPanel({
       <section style={{ marginTop: 24, padding: 18, border: "1px solid #f59e0b", borderRadius: 14, background: "#451a03" }}>
         <h2 style={{ marginTop: 0 }}>Schätzfrage steuern</h2>
         <p style={{ color: "#fed7aa" }}>
-          Frage und richtige Antwort speichern, dann Teams einzeln auswählen: erst die Frage zeigen, anschließend Antworten öffnen.
+          {hasSavedSetup
+            ? "Die gespeicherte Frage und richtige Antwort gelten für alle Team-Schätzungen."
+            : "Frage und richtige Antwort einmal speichern, dann Teams einzeln auswählen."}
         </p>
         <label style={{ display: "grid", gap: 6, marginBottom: 12 }}>
           <span>Schätzfrage</span>
@@ -13812,7 +13885,9 @@ function LiveTiebreakerPanel({
           <span>Richtige Antwort (Zahl)</span>
           <input type="number" step="any" value={answer} onChange={(event) => setAnswer(event.target.value)} style={inputStyle} />
         </label>
-        <button type="button" onClick={saveSetup}>Schätzfrage speichern</button>
+        <button type="button" onClick={saveSetup}>
+          {hasSavedSetup ? "Schätzfrage ändern" : "Schätzfrage speichern"}
+        </button>
         {message && <p style={{ color: "#fde68a" }}>{message}</p>}
       </section>
 
