@@ -5440,15 +5440,33 @@ function App() {
     }
 
     try {
-      await setDoc(
-        getEventRef(sessionData.lobbyCode),
-        {
-          tiebreakerAnswer: numericAnswer,
-          tiebreakerQuestion: cleanedQuestion,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
+      let alreadyStarted = false;
+      await runTransaction(db, async (transaction) => {
+        const eventRef = getEventRef(sessionData.lobbyCode);
+        const eventSnapshot = await transaction.get(eventRef);
+        const teamStates = eventSnapshot.data()?.tiebreakerTeamStates || {};
+
+        if (Object.values(teamStates).some((state) => state?.questionVisible)) {
+          alreadyStarted = true;
+          return;
+        }
+
+        transaction.set(
+          eventRef,
+          {
+            tiebreakerAnswer: numericAnswer,
+            tiebreakerQuestion: cleanedQuestion,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true },
+        );
+      });
+      if (alreadyStarted) {
+        return {
+          ok: false,
+          message: "Die Schätzfrage läuft bereits und kann nicht mehr geändert werden.",
+        };
+      }
       return { ok: true, message: "Schätzfrage gespeichert." };
     } catch (error) {
       console.error("TIEBREAKER SETUP ERROR:", error);
@@ -5653,10 +5671,16 @@ function App() {
       try {
         await runTransaction(db, async (transaction) => {
           const lobbySnapshot = await transaction.get(lobbyRef);
-          const currentParticipant =
-            lobbySnapshot.data()?.tiebreakerParticipants?.[sessionId];
+          const latestLobbyData = lobbySnapshot.data() || {};
+          const currentParticipant = latestLobbyData.tiebreakerParticipants?.[sessionId];
+          const latestTeamState = latestLobbyData.tiebreakerTeamStates?.[sessionId];
+          const currentSubmission = latestLobbyData.tiebreakerSubmissions?.[sessionId];
 
-          if (currentParticipant?.clientId && currentParticipant.clientId !== clientId) return;
+          if (
+            !latestTeamState?.questionVisible ||
+            currentSubmission ||
+            (currentParticipant?.clientId && currentParticipant.clientId !== clientId)
+          ) return;
 
           transaction.update(lobbyRef, {
             [`tiebreakerParticipants.${sessionId}`]: {
@@ -5796,8 +5820,7 @@ function App() {
 
         if (currentSubmission) return;
         const teamState = lobbySnapshotData?.tiebreakerTeamStates?.[sessionId];
-        if (teamState?.questionVisible && !teamState?.answersOpen) return;
-        if (!teamState?.questionVisible && lobbySnapshotData?.tiebreakerStatus !== "active") return;
+        if (!teamState?.questionVisible || !teamState?.answersOpen) return;
         if (!participant || participant.clientId !== clientId) return;
 
         transaction.update(lobbyRef, {
@@ -13793,6 +13816,9 @@ function LiveTiebreakerPanel({
   const hasSavedSetup =
     Boolean(String(lobbyData?.tiebreakerQuestion || "").trim()) &&
     Number.isFinite(Number(lobbyData?.tiebreakerAnswer));
+  const setupLocked = Object.values(lobbyData?.tiebreakerTeamStates || {}).some(
+    (state) => state?.questionVisible,
+  );
 
   useEffect(() => {
     setQuestion(lobbyData?.tiebreakerQuestion || "");
@@ -13876,16 +13902,17 @@ function LiveTiebreakerPanel({
           {hasSavedSetup
             ? "Die gespeicherte Frage und richtige Antwort gelten für alle Team-Schätzungen."
             : "Frage und richtige Antwort einmal speichern, dann Teams einzeln auswählen."}
+          {setupLocked && " Die Schätzfrage ist bereits gezeigt und bleibt deshalb unverändert."}
         </p>
         <label style={{ display: "grid", gap: 6, marginBottom: 12 }}>
           <span>Schätzfrage</span>
-          <textarea value={question} onChange={(event) => setQuestion(event.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical" }} />
+          <textarea disabled={setupLocked} value={question} onChange={(event) => setQuestion(event.target.value)} rows={3} style={{ ...inputStyle, resize: "vertical" }} />
         </label>
         <label style={{ display: "grid", gap: 6, marginBottom: 12 }}>
           <span>Richtige Antwort (Zahl)</span>
-          <input type="number" step="any" value={answer} onChange={(event) => setAnswer(event.target.value)} style={inputStyle} />
+          <input disabled={setupLocked} type="number" step="any" value={answer} onChange={(event) => setAnswer(event.target.value)} style={inputStyle} />
         </label>
-        <button type="button" onClick={saveSetup}>
+        <button disabled={setupLocked} type="button" onClick={saveSetup}>
           {hasSavedSetup ? "Schätzfrage ändern" : "Schätzfrage speichern"}
         </button>
         {message && <p style={{ color: "#fde68a" }}>{message}</p>}
